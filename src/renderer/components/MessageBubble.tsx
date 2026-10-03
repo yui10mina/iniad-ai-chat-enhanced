@@ -1,10 +1,30 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ChatTurn } from "../../shared/types/chat";
 import { CitationPanel } from "./CitationPanel";
 
 interface MessageBubbleProps {
   turn: ChatTurn;
 }
+
+/** リンクはアプリ内遷移させず、Main プロセスの許可判定を通して外部ブラウザーで開く */
+const markdownComponents: Components = {
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      title={href}
+      onClick={(event) => {
+        event.preventDefault();
+        if (href && href.startsWith("https://")) {
+          void window.electronAPI.openExternalUrl(href).catch(() => false);
+        }
+      }}
+    >
+      {children}
+    </a>
+  ),
+};
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ turn }) => {
   const isUser = turn.role === "user";
@@ -83,7 +103,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ turn }) => {
       <div className="message-body">
         <div className="message-sender-name">{isUser ? "あなた" : "AI アシスタント"}</div>
         <div className={`message-bubble ${isUser ? "user" : "assistant"}`}>
-          <p className="message-content">{turn.content}</p>
+          {isUser ? (
+            <p className="message-content">{turn.content}</p>
+          ) : (
+            <div className="message-content markdown">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                disallowedElements={["img"]}
+                components={markdownComponents}
+              >
+                {turn.content}
+              </ReactMarkdown>
+            </div>
+          )}
 
           {!isUser && <CitationPanel citations={turn.citations || []} />}
 
