@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect } from "react";
 import type { AppSettings, PublicAppSettings } from "../../shared/types";
 import { DEFAULT_SETTINGS, OFFICIAL_API_HOST } from "../../shared/types";
+import { buildMcpTestRequest, buildSavePayload, isMcpCredentialField } from "./mcp-test-request";
 
 /** バリデーションエラーの型 */
 interface ValidationErrors {
@@ -45,6 +46,41 @@ function isValidURL(url: string): boolean {
   }
 }
 
+function validateSettings(
+  current: PublicAppSettings,
+  edited: ReadonlySet<keyof AppSettings>
+): ValidationErrors {
+  const errs: ValidationErrors = {};
+
+  // APIキー: 編集済みかつ空の場合のみエラー
+  if (edited.has("apiKey") && !current.apiKey.trim()) {
+    errs.apiKey = "APIキーは必須です";
+  }
+
+  // ベースURL
+  if (current.baseURL && !isValidURL(current.baseURL)) {
+    errs.baseURL = "公式 INIAD API の HTTPS URL を入力してください";
+  }
+
+  // モデル
+  if (!current.model.trim()) {
+    errs.model = "モデルを選択してください";
+  }
+
+  // MOOCsユーザー名・パスワードはペア入力（空のパスワード欄は「変更なし」を表す）
+  const hasUsername = current.moocsUsername.trim().length > 0;
+  const hasTypedPassword = current.moocsPassword.trim().length > 0;
+
+  if (hasUsername && !hasTypedPassword && !current.hasMoocsCredentials) {
+    errs.moocsPassword = "パスワードも入力してください";
+  }
+  if (!hasUsername && hasTypedPassword) {
+    errs.moocsUsername = "ユーザー名も入力してください";
+  }
+
+  return errs;
+}
+
 export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
   // ── State ──
   // settings は表示用（PublicAppSettings）。機密値は含まず、設定済みフラグで状態を示す。
@@ -62,8 +98,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
     type: "success" | "error";
     text: string;
   } | null>(null);
-  const [apiTestResult, setApiTestResult] = useState<TestResult>({ status: "idle" });
   const [mcpTestResult, setMcpTestResult] = useState<TestResult>({ status: "idle" });
+  // 接続テストで失敗した認証情報を、別の項目の「保存」で一緒に保存しないための印。
+  const [mcpCredentialsRejected, setMcpCredentialsRejected] = useState(false);
+  const isTestingMcp = mcpTestResult.status === "testing";
+  const mcpTestRequest = buildMcpTestRequest(settings, editedFields);
+  const hasTypedMcpCredentials = Object.keys(mcpTestRequest.input).length > 0;
 
   // ── 初期読み込み ──
   useEffect(() => {
@@ -81,77 +121,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
     loadSettings();
   }, []);
 
-  // ── バリデーション ──
-  const validate = useCallback(
-    (current: PublicAppSettings): ValidationErrors => {
-      const errs: ValidationErrors = {};
-
-      // APIキー: 編集済みかつ空の場合のみエラー
-      if (editedFields.has("apiKey") && !current.apiKey.trim()) {
-        errs.apiKey = "APIキーは必須です";
-      }
-
-      // ベースURL
-      if (current.baseURL && !isValidURL(current.baseURL)) {
-        errs.baseURL = "公式 INIAD API の HTTPS URL を入力してください";
-      }
-
-      // モデル
-      if (!current.model.trim()) {
-        errs.model = "モデルを選択してください";
-      }
-
-      // MOOCsユーザー名・パスワードはペア入力
-      const hasUsername = current.moocsUsername.trim().length > 0;
-      const hasPassword = editedFields.has("moocsPassword")
-        ? current.moocsPassword.trim().length > 0
-        : current.hasMoocsCredentials;
-
-      if (hasUsername && !hasPassword) {
-        errs.moocsPassword = "パスワードも入力してください";
-      }
-      if (!hasUsername && hasPassword && editedFields.has("moocsPassword")) {
-        errs.moocsUsername = "ユーザー名も入力してください";
-      }
-
-      return errs;
-    },
-    [editedFields]
-  );
-
   // ── フィールド更新 ──
   const updateField = (field: keyof AppSettings, value: string) => {
     const newSettings = { ...settings, [field]: value };
+    const newEditedFields = new Set(editedFields).add(field);
     setSettings(newSettings);
-    setEditedFields((prev) => new Set(prev).add(field));
+    setEditedFields(newEditedFields);
     setSaveMessage(null);
+    if (isMcpCredentialField(field)) {
+      setMcpTestResult({ status: "idle" });
+      setMcpCredentialsRejected(false);
+    }
 
     // バリデーションを実行
-    const newErrors = validate(newSettings);
-    setErrors(newErrors);
+    setErrors(validateSettings(newSettings, newEditedFields));
   };
 
   // ── 保存とUI同期 ──
   // 編集済みフィールドを保存したあと getSettings で再取得し、
   // hasApiKey/hasMoocsCredentials と機密入力欄を実際の状態に同期する。
-  const persistAndSync = async () => {
-    const partial: Partial<AppSettings> = {};
-    for (const field of editedFields) {
-      partial[field] = settings[field];
-    }
+  // 接続テストで失敗した認証情報は保存せず、入力欄に残す。戻り値は残した項目があるか。
+  const persistAndSync = async (): Promise<boolean> => {
+    const partial = buildSavePayload(settings, editedFields, mcpCredentialsRejected);
     if (Object.keys(partial).length > 0 && window.electronAPI?.saveSettings) {
       await window.electronAPI.saveSettings(partial);
     }
-    setEditedFields(new Set());
+
+    const keptFields = mcpCredentialsRejected ? [...editedFields].filter(isMcpCredentialField) : [];
+    setEditedFields(new Set(keptFields));
     if (window.electronAPI?.getSettings) {
       const reloaded = await window.electronAPI.getSettings();
-      setSettings({ ...DEFAULT_SETTINGS, ...reloaded });
+      setSettings({
+        ...DEFAULT_SETTINGS,
+        ...reloaded,
+        ...(keptFields.length > 0
+          ? { moocsUsername: settings.moocsUsername, moocsPassword: settings.moocsPassword }
+          : {}),
+      });
     }
+    return keptFields.length > 0;
   };
 
   // ── 保存 ──
   const handleSave = async () => {
-    const validationErrors = validate(settings);
+    const validationErrors = validateSettings(settings, editedFields);
     setErrors(validationErrors);
 
     if (Object.keys(validationErrors).length > 0) {
@@ -163,9 +176,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
     setSaveMessage(null);
 
     try {
-      await persistAndSync();
+      const keptCredentials = await persistAndSync();
 
-      setSaveMessage({ type: "success", text: "設定を保存しました" });
+      setSaveMessage({
+        type: "success",
+        text: keptCredentials
+          ? "設定を保存しました（接続テストに失敗した学籍番号とパスワードは保存していません）"
+          : "設定を保存しました",
+      });
 
       // 3秒後にメッセージをクリア
       setTimeout(() => setSaveMessage(null), 3000);
@@ -180,45 +198,52 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
   };
 
   // ── 接続テスト ──
-  const handleTestApi = async () => {
-    setApiTestResult({ status: "testing" });
-    try {
-      // Save settings first so the test handler has the latest values
-      await persistAndSync();
-
-      if (window.electronAPI?.testApiConnection) {
-        const result = await window.electronAPI.testApiConnection();
-        setApiTestResult({
-          status: result.success ? "success" : "error",
-          message: result.success ? "接続成功" : result.error || "接続失敗",
-        });
-      } else {
-        setApiTestResult({ status: "success", message: "接続成功（モック）" });
-      }
-    } catch (e) {
-      setApiTestResult({
-        status: "error",
-        message: e instanceof Error ? e.message : "テスト失敗",
-      });
-    }
-  };
-
+  // テスト中は入力を保存しない。ログインを確認できた値だけを Main が保存し、
+  // 失敗したときは入力欄と保存済みの値をどちらも残す。
   const handleTestMcp = async () => {
-    setMcpTestResult({ status: "testing" });
-    try {
-      // Save settings first so the login handler has the latest credentials
-      await persistAndSync();
+    const { canTest, input } = mcpTestRequest;
+    if (!canTest || isTestingMcp) return;
 
-      if (window.electronAPI?.testMcpConnection) {
-        const result = await window.electronAPI.testMcpConnection();
+    setMcpTestResult({ status: "testing", message: "MOOCs へのログインを確認しています" });
+    setSaveMessage(null);
+    try {
+      const result = await window.electronAPI.testMcpConnection(input);
+      setMcpCredentialsRejected(!result.success);
+      if (!result.success) {
         setMcpTestResult({
-          status: result.success ? "success" : "error",
-          message: result.success ? "MCP接続成功" : result.error || "接続失敗",
+          status: "error",
+          message: [result.error || "接続失敗", result.guidance].filter(Boolean).join(" "),
         });
-      } else {
-        setMcpTestResult({ status: "success", message: "接続成功（モック）" });
+        return;
       }
+
+      if (Object.keys(input).length > 0) {
+        // 他の項目の未保存の入力を消さないよう、保存された認証情報の欄だけを更新する。
+        setSettings((prev) => ({
+          ...prev,
+          moocsUsername: input.moocsUsername ?? prev.moocsUsername,
+          moocsPassword: "",
+          hasMoocsCredentials: true,
+        }));
+        setEditedFields((prev) => {
+          const next = new Set(prev);
+          next.delete("moocsUsername");
+          next.delete("moocsPassword");
+          return next;
+        });
+        setErrors((prev) => {
+          const next = { ...prev };
+          delete next.moocsUsername;
+          delete next.moocsPassword;
+          return next;
+        });
+      }
+      setMcpTestResult({
+        status: "success",
+        message: Object.keys(input).length > 0 ? "ログインを確認して保存しました" : "ログイン成功",
+      });
     } catch (e) {
+      setMcpCredentialsRejected(true);
       setMcpTestResult({
         status: "error",
         message: e instanceof Error ? e.message : "テスト失敗",
@@ -227,13 +252,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
   };
 
   // ── 表示ヘルパー ──
-  const renderTestButton = (label: string, result: TestResult, onTest: () => void) => (
+  const renderTestButton = (
+    label: string,
+    result: TestResult,
+    onTest: () => void,
+    disabled: boolean
+  ) => (
     <div className="settings-test-row">
       <button
         type="button"
         className="settings-test-button"
         onClick={onTest}
-        disabled={result.status === "testing"}
+        disabled={disabled || result.status === "testing"}
       >
         {result.status === "testing" ? "テスト中..." : label}
       </button>
@@ -373,8 +403,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
             />
             {errors.baseURL && <span className="settings-error">{errors.baseURL}</span>}
           </div>
-
-          {renderTestButton("API接続テスト", apiTestResult, handleTestApi)}
         </section>
 
         {/* ── モデル設定セクション ── */}
@@ -440,9 +468,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
             INIAD MOOCs 認証
           </h3>
           <p className="settings-section-description">
-            学籍番号とパスワードを入力後、「接続テスト」を押してください。 認証情報を使って MCP
-            サーバー（Playwright）経由で MOOCs
-            に接続します。起動時・チャット送信時にも自動接続を試みます。
+            学籍番号とパスワードを入力して、接続テストを押してください。MOOCs
+            へのログインを確認し、成功したときに保存します。失敗しても入力と保存済みの値は変わらず、失敗した値は「保存」でも保存しません。テスト中は今の接続がいったん切れます。起動時・チャット送信時にも自動接続を試みます。
           </p>
 
           <div className="settings-field">
@@ -457,6 +484,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
               onChange={(e) => updateField("moocsUsername", e.target.value)}
               placeholder="s1F10XXXXXX"
               autoComplete="off"
+              disabled={isTestingMcp}
             />
             {errors.moocsUsername && <span className="settings-error">{errors.moocsUsername}</span>}
           </div>
@@ -476,6 +504,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
                   settings.hasMoocsCredentials ? "設定済み（変更時のみ入力）" : "パスワード"
                 }
                 autoComplete="off"
+                disabled={isTestingMcp}
               />
               <button
                 type="button"
@@ -507,7 +536,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
             {errors.moocsPassword && <span className="settings-error">{errors.moocsPassword}</span>}
           </div>
 
-          {renderTestButton("接続テスト", mcpTestResult, handleTestMcp)}
+          {renderTestButton(
+            hasTypedMcpCredentials ? "接続テストして保存" : "接続テスト",
+            mcpTestResult,
+            handleTestMcp,
+            !mcpTestRequest.canTest
+          )}
+          {!mcpTestRequest.canTest && (
+            <span className="settings-hint">
+              学籍番号とパスワードの両方を入力するとテストできます
+            </span>
+          )}
         </section>
       </div>
 
@@ -550,14 +589,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
           </span>
         )}
         <div className="settings-footer-buttons">
-          <button type="button" className="settings-button-cancel" onClick={onClose}>
+          <button
+            type="button"
+            className="settings-button-cancel"
+            onClick={onClose}
+            disabled={isTestingMcp}
+          >
             キャンセル
           </button>
           <button
             type="button"
             className="settings-button-save"
             onClick={handleSave}
-            disabled={isSaving || Object.keys(errors).length > 0}
+            disabled={isSaving || isTestingMcp || Object.keys(errors).length > 0}
           >
             {isSaving ? "保存中..." : "保存"}
           </button>

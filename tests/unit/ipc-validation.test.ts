@@ -3,10 +3,32 @@ import {
   validateApiBaseUrl,
   validateChatInput,
   validateExternalUrl,
+  validateMcpCredentialTestInput,
   validateSettingsInput,
 } from "../../src/main/ipc-validation";
 
 describe("IPC input validation", () => {
+  it("accepts only MOOCs credentials for the connection test", () => {
+    expect(validateMcpCredentialTestInput({})).toEqual({});
+    expect(
+      validateMcpCredentialTestInput({ moocsUsername: " user ", moocsPassword: " pass " })
+    ).toEqual({ moocsUsername: "user", moocsPassword: " pass " });
+    expect(validateMcpCredentialTestInput({ moocsPassword: "pass" })).toEqual({
+      moocsPassword: "pass",
+    });
+
+    expect(() => validateMcpCredentialTestInput(undefined)).toThrow("形式");
+    expect(() => validateMcpCredentialTestInput(["pass"])).toThrow("形式");
+    expect(() => validateMcpCredentialTestInput({ apiKey: "sk-test" })).toThrow("許可されていない");
+    expect(() =>
+      validateMcpCredentialTestInput({ moocsPassword: "pass", model: "gpt-5.4" })
+    ).toThrow("許可されていない");
+    expect(() => validateMcpCredentialTestInput({ moocsUsername: "   " })).toThrow("ユーザー名");
+    expect(() => validateMcpCredentialTestInput({ moocsPassword: "" })).toThrow("パスワード");
+    expect(() => validateMcpCredentialTestInput({ moocsPassword: "a\nb" })).toThrow("使用できない");
+    expect(() => validateMcpCredentialTestInput({ moocsPassword: 1 })).toThrow("文字列");
+  });
+
   it("normalizes a valid chat message and rejects oversized input", () => {
     expect(validateChatInput("  質問です  ")).toBe("質問です");
     expect(() => validateChatInput("x".repeat(8_001))).toThrow("8,000");
@@ -35,9 +57,7 @@ describe("IPC input validation", () => {
     );
     expect(() => validateExternalUrl("javascript:alert(1)")).toThrow("安全でない");
     expect(() => validateExternalUrl("https://127.0.0.1/admin")).toThrow("安全でない");
-    expect(() => validateExternalUrl("https://[::ffff:127.0.0.1]/admin")).toThrow(
-      "安全でない"
-    );
+    expect(() => validateExternalUrl("https://[::ffff:127.0.0.1]/admin")).toThrow("安全でない");
     expect(() => validateExternalUrl("https://printer.local/admin")).toThrow("安全でない");
     expect(() => validateExternalUrl("https://intranet/admin")).toThrow("安全でない");
     expect(() => validateExternalUrl("https://user:pass@example.com")).toThrow("安全でない");
