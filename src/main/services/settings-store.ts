@@ -160,7 +160,14 @@ export class SettingsStore {
         // undefined/null や未知のキーは無音でスキップ
       }
 
-      await this.saveAllFiles(updated);
+      try {
+        await this.saveAllFiles(updated);
+      } catch (error) {
+        // credentials.enc の保存に失敗したとき、settings.json だけ新しい値のまま残すと、
+        // 次回起動時に新しいユーザー名と古いパスワードの組み合わせで接続してしまう。
+        await this.saveSettingsFile(this.cache!).catch(() => undefined);
+        throw error;
+      }
       this.cache = updated;
     });
 

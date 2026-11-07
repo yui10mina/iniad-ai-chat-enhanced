@@ -1,6 +1,11 @@
 import { AppError } from "../shared/types/errors";
-import { OFFICIAL_API_HOST, type PartialAppSettings } from "../shared/types/settings";
+import {
+  OFFICIAL_API_HOST,
+  type McpCredentialTestInput,
+  type PartialAppSettings,
+} from "../shared/types/settings";
 
+const MCP_CREDENTIAL_KEYS = new Set(["moocsUsername", "moocsPassword"]);
 const MAX_CHAT_CHARS = 8_000;
 const MAX_EXTERNAL_URL_CHARS = 2_048;
 const ALLOWED_SETTING_KEYS = new Set([
@@ -64,6 +69,30 @@ export function validateSettingsInput(value: unknown): PartialAppSettings {
         result.baseURL = validateApiBaseUrl(settingValue);
         break;
     }
+  }
+  return result;
+}
+
+export function validateMcpCredentialTestInput(value: unknown): McpCredentialTestInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    invalid("接続テストのデータ形式が不正です");
+  }
+
+  const keys = Object.keys(value);
+  if (keys.some((key) => !MCP_CREDENTIAL_KEYS.has(key))) {
+    invalid("許可されていない設定項目が含まれています");
+  }
+  if (keys.length === 0) return {};
+
+  const { moocsUsername, moocsPassword } = validateSettingsInput(value);
+  const result: McpCredentialTestInput = {};
+  if (keys.includes("moocsUsername")) {
+    if (!moocsUsername) invalid("MOOCs ユーザー名を入力してください");
+    result.moocsUsername = moocsUsername;
+  }
+  if (keys.includes("moocsPassword")) {
+    if (!moocsPassword) invalid("MOOCs パスワードを入力してください");
+    result.moocsPassword = moocsPassword;
   }
   return result;
 }

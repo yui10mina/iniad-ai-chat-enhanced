@@ -18,6 +18,7 @@ export type {
   McpStatus,
   McpConnectionState,
   McpConnectionError,
+  McpCredentialTestInput,
   ConnectionTestResult,
 } from "./settings";
 
