@@ -15,9 +15,12 @@ INIAD（東洋大学 情報連携学部）の学生向けに、MOOCs 講義資�
 
 | 要件    | バージョン              |
 | ------- | ----------------------- |
-| Node.js | 18 以上                 |
+| Node.js | 22.12 以上              |
 | npm     | 9 以上                  |
 | OS      | Windows / macOS / Linux |
+
+Electron のバイナリは `npm install` では取得されず、初回の `npm start` などで自動的にダウンロードされます。このダウンロードには Node.js 22.12 以上が必要です。
+`npm run package` は実行中の Node.js を配布物へ同梱するので、配布物も 22.12 以上の Node.js で作成してください。
 
 ## クイックスタート
 
