@@ -14,6 +14,7 @@ import type {
   PartialAppSettings,
   ConnectionTestResult,
   McpConnectionState,
+  McpCredentialTestInput,
   MaterialContextSummary,
 } from "../shared/types";
 
@@ -53,11 +54,9 @@ const api = {
   saveSettings: (settings: PartialAppSettings): Promise<void> =>
     ipcRenderer.invoke("settings:set", settings),
 
-  /** INIAD API への接続テスト */
-  testApiConnection: (): Promise<ConnectionTestResult> => ipcRenderer.invoke("settings:test-api"),
-
-  /** MCP サーバへの接続テスト */
-  testMcpConnection: (): Promise<ConnectionTestResult> => ipcRenderer.invoke("settings:test-mcp"),
+  /** MOOCs へのログインをテストする（入力値を渡すと、成功時だけ保存する） */
+  testMcpConnection: (input: McpCredentialTestInput): Promise<ConnectionTestResult> =>
+    ipcRenderer.invoke("settings:test-mcp", input),
 
   /** MCP をユーザー操作で再接続する */
   reconnectMcp: (): Promise<ConnectionTestResult> => ipcRenderer.invoke("mcp:reconnect"),

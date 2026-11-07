@@ -345,6 +345,87 @@ describe("McpClient security boundary", () => {
     expect(listener.mock.calls[0][0].message).not.toContain("student@example.com");
   });
 
+  it("verifies the login only when at least one course is returned", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+
+    sdkMocks.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify({ courses: [{ id: "COS201" }] }) }],
+    });
+    await expect(client.verifyMoocsLogin()).resolves.toBeUndefined();
+
+    // ログイン画面を経由できなかった場合、ツールはエラーではなく空の一覧を返す。
+    sdkMocks.callTool.mockResolvedValueOnce({
+      content: [{ type: "text", text: JSON.stringify({ courses: [] }) }],
+    });
+    await expect(client.verifyMoocsLogin()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({
+        code: "MCP_AUTH_FAILED",
+        retryable: false,
+      })
+    );
+
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "Login failed: Timeout 5000ms exceeded" }],
+    });
+    await expect(client.verifyMoocsLogin()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ code: "MCP_AUTH_FAILED" })
+    );
+  });
+
+  it("treats a network failure during login as transient, not as bad credentials", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const listener = vi.fn();
+    client.onConnectionIssue(listener);
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [
+        { type: "text", text: "Login failed: page.goto: net::ERR_INTERNET_DISCONNECTED at x" },
+      ],
+    });
+
+    await expect(client.verifyMoocsLogin()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({
+        code: "MCP_CONNECTION_FAILED",
+        kind: "transient",
+        retryable: true,
+      })
+    );
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ retryable: true }));
+  });
+
+  it("keeps a wrong password, shown as a redirect timeout, as an authentication failure", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "Login failed: page.waitForURL: Timeout 5000ms exceeded" }],
+    });
+
+    await expect(client.verifyMoocsLogin()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({
+        code: "MCP_AUTH_FAILED",
+        retryable: false,
+      })
+    );
+  });
+
+  it("does not treat a navigation error outside login as a lost connection", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "page.goto: net::ERR_ABORTED at https://moocs.iniad.org/x" }],
+    });
+
+    await expect(client.navigateTo("https://moocs.iniad.org/x")).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ kind: "unknown" })
+    );
+    expect(client.getStatus()).toBe("connected");
+  });
+
   it("does not expose raw text from an unclassified MCP tool error", async () => {
     const client = new McpClient();
     await client.connect("student", "password");
