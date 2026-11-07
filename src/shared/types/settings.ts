@@ -90,6 +90,12 @@ export interface AppStatus {
 /** 設定保存時の部分更新用（空文字列は既存値を維持） */
 export type PartialAppSettings = Partial<AppSettings>;
 
+/**
+ * MOOCs 接続テストに渡す、画面で入力した認証情報。
+ * 省略した項目は保存済みの値を使う。空のオブジェクトは保存済みの値でのテストを表す。
+ */
+export type McpCredentialTestInput = Partial<Pick<AppSettings, "moocsUsername" | "moocsPassword">>;
+
 /** 接続テスト結果 */
 export interface ConnectionTestResult {
   success: boolean;

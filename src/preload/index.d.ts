@@ -13,6 +13,7 @@ import type {
   PartialAppSettings,
   ConnectionTestResult,
   McpConnectionState,
+  McpCredentialTestInput,
   MaterialContextSummary,
 } from "../shared/types";
 
@@ -34,8 +35,7 @@ export interface ElectronAPI {
   // ── 設定 ──
   getSettings: () => Promise<PublicAppSettings>;
   saveSettings: (settings: PartialAppSettings) => Promise<void>;
-  testApiConnection: () => Promise<ConnectionTestResult>;
-  testMcpConnection: () => Promise<ConnectionTestResult>;
+  testMcpConnection: (input: McpCredentialTestInput) => Promise<ConnectionTestResult>;
   reconnectMcp: () => Promise<ConnectionTestResult>;
   openExternalUrl: (url: string) => Promise<boolean>;
 

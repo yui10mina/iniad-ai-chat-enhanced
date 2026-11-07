@@ -18,10 +18,7 @@ vi.mock("electron", () => ({
 }));
 
 import { safeStorage } from "electron";
-import {
-  SettingsStore,
-  isSecureStorageAvailable,
-} from "../../src/main/services/settings-store";
+import { SettingsStore, isSecureStorageAvailable } from "../../src/main/services/settings-store";
 
 /** ファイルの存在チェック */
 async function exists(p: string): Promise<boolean> {
@@ -68,6 +65,25 @@ describe("SettingsStore", () => {
   });
 
   // ── 基本テスト（暗号化下でも契約不变） ──
+
+  it("credentials.enc の保存に失敗したら settings.json を元の値へ戻す", async () => {
+    await store.updateSettings({ moocsUsername: "old-user", moocsPassword: "old-pass" });
+
+    vi.mocked(safeStorage.encryptString).mockImplementationOnce(() => {
+      throw new Error("encrypt failed");
+    });
+    await expect(
+      store.updateSettings({ moocsUsername: "new-user", moocsPassword: "new-pass" })
+    ).rejects.toThrow("encrypt failed");
+
+    expect(store.getRawSettings().moocsUsername).toBe("old-user");
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+    expect(reloaded.getRawSettings()).toMatchObject({
+      moocsUsername: "old-user",
+      moocsPassword: "old-pass",
+    });
+  });
 
   it("updateSettings で apiKey が保存され getRawSettings で読める", async () => {
     await store.updateSettings({ apiKey: "sk-real" });

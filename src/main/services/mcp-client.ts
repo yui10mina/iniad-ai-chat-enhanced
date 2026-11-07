@@ -650,6 +650,26 @@ export class McpClient {
     );
   }
 
+  /**
+   * MOOCs に実際にログインできることを確認する。
+   *
+   * connect() は MCP サーバーの起動とツール一覧の確認だけで、パスワードは検証しない。
+   * ログインツールはログイン画面を経由できなかった場合に、エラーではなく空のコース一覧を
+   * 返すことがあるので、コースが 1 件以上取得できたときだけ成功とする。
+   */
+  async verifyMoocsLogin(signal?: AbortSignal): Promise<void> {
+    const result = await this.loginToMoocs(signal);
+    if (this.parseToolResult<CourseSummary>(result).length === 0) {
+      throw new McpClientError(
+        "MCP_AUTH_FAILED",
+        "MOOCs へのログインを確認できませんでした。",
+        "authentication",
+        "学籍番号とパスワードを確認してください。正しい場合は、少し待ってからもう一度お試しください。",
+        false
+      );
+    }
+  }
+
   async fetchCourses(signal?: AbortSignal): Promise<CourseSummary[]> {
     const result = await this.callToolSafe("listCourses", undefined, TOOL_TIMEOUT_MS, signal);
     return this.parseToolResult<CourseSummary>(result);
@@ -830,6 +850,21 @@ export class McpClient {
     const normalized = message.toLowerCase();
 
     if (isAbortError(error)) return cancelledError();
+
+    // ログインツールはページ移動の失敗も "Login failed: ..." で返す。回線の問題を
+    // 認証失敗として扱うと、正しいパスワードの再入力を促し、自動再接続も止まってしまう。
+    if (
+      normalized.includes("login failed") &&
+      (normalized.includes("net::err_") || normalized.includes("page.goto:"))
+    ) {
+      return new McpClientError(
+        "MCP_CONNECTION_FAILED",
+        "MOOCs に接続できませんでした。",
+        "transient",
+        "ネットワーク状態を確認して、もう一度お試しください。",
+        true
+      );
+    }
 
     if (
       [

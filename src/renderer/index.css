@@ -1285,9 +1285,15 @@ body {
   transition: all 0.2s ease;
 }
 
-.settings-button-cancel:hover {
+.settings-button-cancel:hover:not(:disabled) {
   color: var(--text-main);
   border-color: var(--text-muted);
+}
+
+.settings-button-cancel:disabled,
+.settings-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .settings-button-save {
