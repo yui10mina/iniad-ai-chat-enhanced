@@ -1,3 +1,4 @@
+import fs from "fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sdkMocks = vi.hoisted(() => ({
@@ -71,8 +72,22 @@ function availableTools() {
   return REQUIRED_MCP_TOOLS.map((name) => ({ name }));
 }
 
+const actualRealpathSync = fs.realpathSync;
+
+/**
+ * Playwright のブラウザーが入っていない環境（CI）でも動くよう、ブラウザーのパスだけ実在を問わない。
+ * 起動スクリプトや MCP CLI のパスは実物で解決し、欠けていればテストを失敗させる。
+ */
+function realpathSyncIgnoringBrowser(target: fs.PathLike, ...rest: unknown[]): unknown {
+  if (/[\\/]chromium[-_][^\\/]*[\\/]/.test(String(target))) return String(target);
+  return (actualRealpathSync as (...args: unknown[]) => unknown)(target, ...rest);
+}
+
 describe("McpClient security boundary", () => {
   beforeEach(() => {
+    vi.spyOn(fs, "realpathSync").mockImplementation(
+      realpathSyncIgnoringBrowser as typeof fs.realpathSync
+    );
     sdkMocks.connect.mockReset().mockResolvedValue(undefined);
     sdkMocks.ping.mockReset().mockResolvedValue({});
     sdkMocks.listTools.mockReset().mockResolvedValue({ tools: availableTools() });
