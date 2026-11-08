@@ -667,10 +667,12 @@ import { safeStorage } from "electron";
 const secrets = JSON.stringify({ apiKey, moocsPassword });
 if (await safeStorage.isAsyncEncryptionAvailable()) {
   const encrypted = await safeStorage.encryptStringAsync(secrets);
-  await fs.writeFile(credentialsPath, encrypted.toString("base64"));
+  // 一時ファイルに書いてから rename で置き換える（途中で失敗しても元のファイルが残る）
+  await writeFileAtomic(credentialsPath, encrypted.toString("base64"));
 }
 
-// 読込時: 復号して JSON をパース（shouldReEncrypt が true なら暗号化し直して保存）
+// 読込時: 復号して JSON をパース
+// shouldReEncrypt が true でも起動時には書き直さず、次にユーザーが保存したときに新しい鍵で暗号化する
 const encrypted = Buffer.from(
   await fs.readFile(credentialsPath, "utf-8"),
   "base64",

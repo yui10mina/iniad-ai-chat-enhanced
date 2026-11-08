@@ -9,6 +9,7 @@
  */
 
 import { app, safeStorage } from "electron";
+import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
 import { join, dirname } from "path";
 import {
@@ -298,14 +299,11 @@ export class SettingsStore {
       return empty;
     }
 
-    // 鍵のローテーション等で再暗号化を求められた場合は保存し直す。
-    // 復号自体は成功しているので、再暗号化の失敗で資格情報を .bak へ退避しない。
+    // 鍵のローテーション等で再暗号化を求められても、起動時には書き直さない。
+    // ユーザーの操作なしにファイルを書き換えると、旧版へ戻したときに読めなくなるおそれがある。
+    // 次にユーザーが保存したときに、新しい鍵で暗号化される。
     if (shouldReEncrypt) {
-      try {
-        await this.saveCredentialsFile(secrets);
-      } catch {
-        console.warn("[SettingsStore] Credential re-encryption failed; keeping existing file");
-      }
+      console.info("[SettingsStore] Credentials will be re-encrypted on the next save");
     }
     return secrets;
   }
@@ -373,8 +371,7 @@ export class SettingsStore {
       model: settings.model,
       moocsUsername: settings.moocsUsername,
     };
-    await fs.writeFile(this.settingsPath, JSON.stringify(nonSecret, null, 2), "utf-8");
-    await this.chmod0600(this.settingsPath);
+    await this.writeFileAtomic(this.settingsPath, JSON.stringify(nonSecret, null, 2));
   }
 
   /**
@@ -391,8 +388,25 @@ export class SettingsStore {
     }
     const json = JSON.stringify(secrets);
     const encrypted = await this.encryptSecrets(json);
-    await fs.writeFile(this.credentialsPath, encrypted, "utf-8");
-    await this.chmod0600(this.credentialsPath);
+    await this.writeFileAtomic(this.credentialsPath, encrypted);
+  }
+
+  /**
+   * 同じフォルダの一時ファイルに書いてから置き換える。
+   *
+   * 直接上書きすると、書き込みが途中で失敗したときに中身が空や途中までの状態で残る。
+   * credentials.enc は唯一のコピーなので、次回起動で復号できず .bak に退避され、元に戻せない。
+   */
+  private async writeFileAtomic(filePath: string, content: string): Promise<void> {
+    const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+      await this.chmod0600(tempPath);
+      await fs.rename(tempPath, filePath);
+    } catch (error) {
+      await fs.unlink(tempPath).catch(() => undefined);
+      throw error;
+    }
   }
 
   // ── 暗号化ヘルパー ────────────────────────────────
