@@ -202,7 +202,7 @@ describe("McpClient security boundary", () => {
     const client = new McpClient();
 
     await expect(client.connect("student", "password")).rejects.toEqual(
-      expect.objectContaining<McpClientError>({
+      expect.objectContaining<Partial<McpClientError>>({
         code: "MCP_TOOLS_UNAVAILABLE",
         kind: "configuration",
         retryable: false,
@@ -286,7 +286,7 @@ describe("McpClient security boundary", () => {
     sdkMocks.callTool.mockRejectedValueOnce(new Error("remote operation aborted unexpectedly"));
 
     await expect(client.callToolSafe("listCourses")).rejects.toEqual(
-      expect.objectContaining<McpClientError>({
+      expect.objectContaining<Partial<McpClientError>>({
         code: "MCP_CONNECTION_FAILED",
         kind: "unknown",
       })
@@ -302,7 +302,7 @@ describe("McpClient security boundary", () => {
     sdkMocks.callTool.mockRejectedValueOnce(new Error("Connection closed: private details"));
 
     await expect(client.callToolSafe("listCourses")).rejects.toEqual(
-      expect.objectContaining<McpClientError>({
+      expect.objectContaining<Partial<McpClientError>>({
         code: "MCP_CONNECTION_FAILED",
         kind: "transient",
         retryable: true,
@@ -344,7 +344,7 @@ describe("McpClient security boundary", () => {
     });
 
     await expect(client.loginToMoocs()).rejects.toEqual(
-      expect.objectContaining<McpClientError>({
+      expect.objectContaining<Partial<McpClientError>>({
         code: "MCP_AUTH_FAILED",
         retryable: false,
       })
@@ -450,7 +450,7 @@ describe("McpClient security boundary", () => {
     });
 
     await expect(client.loginToMoocs()).rejects.toEqual(
-      expect.objectContaining<McpClientError>({
+      expect.objectContaining<Partial<McpClientError>>({
         message: "MCP ツールの実行に失敗しました。",
         kind: "unknown",
       })
