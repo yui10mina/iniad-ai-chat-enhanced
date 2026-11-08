@@ -385,7 +385,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
             <span className="settings-hint">
               {settings.hasApiKey
                 ? "✓ APIキーは設定済みです（変更時のみ入力）"
-                : "※ INIAD Slack「GPT-4o mini」で取得可能"}
+                : "※ INIAD Slack の「gpt6-luna」で取得可能"}
             </span>
           </div>
 
