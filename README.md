@@ -20,7 +20,7 @@ INIAD（東洋大学 情報連携学部）の学生向けに、MOOCs 講義資�
 | OS      | Windows / macOS / Linux |
 
 Electron のバイナリは `npm install` では取得されず、初回の `npm start` などで自動的にダウンロードされます。このダウンロードには Node.js 22.12 以上が必要です。
-`npm run package` は実行中の Node.js を配布物へ同梱するので、配布物も 22.12 以上の Node.js で作成してください。
+`npm run package` は実行中の Node.js を配布物へ同梱するので、配布物も 22.12 以上の Node.js で作成してください。`npm start` も同じ MCP ランタイムを作るので、22.12 未満の Node.js では `npm start` と `npm run package` のどちらもエラーで止まります。`npm run verify:mcp:packaged` も同梱された Node.js のバージョンを検査します。
 
 ## クイックスタート
 

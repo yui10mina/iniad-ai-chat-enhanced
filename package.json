@@ -31,6 +31,9 @@
     "email": "s1F102400011@iniad.org"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@rarandeyo/iniad-moocs-mcp": "^0.0.4",
