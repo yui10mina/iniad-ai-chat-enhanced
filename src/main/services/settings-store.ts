@@ -28,9 +28,15 @@ const CREDENTIALS_FILE = "credentials.enc";
 const PLAINTEXT_PREFIX = "plaintext:";
 const ALLOWED_MODELS = new Set(["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"]);
 
-/** Reject Linux's unprotected fallback in addition to unavailable safeStorage. */
-export function isSecureStorageAvailable(platform = process.platform): boolean {
-  if (!safeStorage.isEncryptionAvailable()) return false;
+/**
+ * Reject Linux's unprotected fallback in addition to unavailable safeStorage.
+ *
+ * 同期 API（isEncryptionAvailable/encryptString/decryptString）は Electron 45 で非推奨、
+ * 46 で削除されるため、Electron 42 で追加された非同期 API を使う。
+ * getSelectedStorageBackend() は 46 以降も残る。
+ */
+export async function isSecureStorageAvailable(platform = process.platform): Promise<boolean> {
+  if (!(await safeStorage.isAsyncEncryptionAvailable())) return false;
   return platform !== "linux" || safeStorage.getSelectedStorageBackend() !== "basic_text";
 }
 
@@ -270,14 +276,17 @@ export class SettingsStore {
       return empty;
     }
 
+    let secrets: Secrets;
+    let shouldReEncrypt: boolean;
     try {
       const content = await fs.readFile(this.credentialsPath, "utf-8");
-      const decrypted = this.decryptSecrets(content);
-      const parsed = JSON.parse(decrypted) as Partial<Secrets>;
-      return {
+      const decrypted = await this.decryptSecrets(content);
+      const parsed = JSON.parse(decrypted.result) as Partial<Secrets>;
+      secrets = {
         apiKey: sanitizeSecret(parsed.apiKey, 512),
         moocsPassword: sanitizeSecret(parsed.moocsPassword, 4_096),
       };
+      shouldReEncrypt = decrypted.shouldReEncrypt;
     } catch {
       // 復号失敗（破損/別PC持ち込みでDPAPI復号不可）→ .bak に退避
       console.warn("[SettingsStore] Credential decryption failed; re-entry is required");
@@ -288,6 +297,17 @@ export class SettingsStore {
       }
       return empty;
     }
+
+    // 鍵のローテーション等で再暗号化を求められた場合は保存し直す。
+    // 復号自体は成功しているので、再暗号化の失敗で資格情報を .bak へ退避しない。
+    if (shouldReEncrypt) {
+      try {
+        await this.saveCredentialsFile(secrets);
+      } catch {
+        console.warn("[SettingsStore] Credential re-encryption failed; keeping existing file");
+      }
+    }
+    return secrets;
   }
 
   /**
@@ -306,7 +326,7 @@ export class SettingsStore {
     if (!hasLegacySecrets) return;
 
     if (!(await this.fileExists(this.credentialsPath))) {
-      if (isSecureStorageAvailable()) {
+      if (await isSecureStorageAvailable()) {
         // credentials.enc なし → settings.json の機密を暗号化して移行
         await this.saveCredentialsFile({
           apiKey: legacy.apiKey ?? "",
@@ -370,7 +390,7 @@ export class SettingsStore {
       return;
     }
     const json = JSON.stringify(secrets);
-    const encrypted = this.encryptSecrets(json);
+    const encrypted = await this.encryptSecrets(json);
     await fs.writeFile(this.credentialsPath, encrypted, "utf-8");
     await this.chmod0600(this.credentialsPath);
   }
@@ -381,9 +401,9 @@ export class SettingsStore {
    * 機密 JSON を暗号化して base64 文字列で返す
    * safeStorage が利用不可の場合は秘密情報を永続化しない。
    */
-  private encryptSecrets(plaintextJson: string): string {
-    if (isSecureStorageAvailable()) {
-      const encrypted = safeStorage.encryptString(plaintextJson);
+  private async encryptSecrets(plaintextJson: string): Promise<string> {
+    if (await isSecureStorageAvailable()) {
+      const encrypted = await safeStorage.encryptStringAsync(plaintextJson);
       return encrypted.toString("base64");
     }
     throw new Error("OS の安全な資格情報ストレージを利用できないため、秘密情報を保存できません");
@@ -391,16 +411,22 @@ export class SettingsStore {
 
   /**
    * 暗号化された文字列を復号して JSON 文字列を返す
+   *
+   * 同期 API の encryptString で保存された既存の credentials.enc もそのまま復号できる
+   * （非同期 API の鍵リングは同期 API と同じ v10/v11 の鍵を持つ）。
    */
-  private decryptSecrets(stored: string): string {
+  private async decryptSecrets(
+    stored: string
+  ): Promise<{ result: string; shouldReEncrypt: boolean }> {
     if (stored.startsWith(PLAINTEXT_PREFIX)) {
       throw new Error("insecure legacy credentials require migration");
     }
-    if (!isSecureStorageAvailable()) {
+    if (!(await isSecureStorageAvailable())) {
       throw new Error("safeStorage unavailable but credentials appear to be encrypted");
     }
     const buf = Buffer.from(stored, "base64");
-    return safeStorage.decryptString(buf);
+    const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(buf);
+    return { result, shouldReEncrypt };
   }
 
   // ── ユーティリティ ────────────────────────────────
@@ -424,7 +450,7 @@ export class SettingsStore {
     const stored = await fs.readFile(this.credentialsPath, "utf-8");
     if (!stored.startsWith(PLAINTEXT_PREFIX)) return;
 
-    if (!isSecureStorageAvailable()) {
+    if (!(await isSecureStorageAvailable())) {
       await fs.unlink(this.credentialsPath);
       console.warn(
         "[SettingsStore] Removed insecure legacy credentials; secure storage is unavailable"

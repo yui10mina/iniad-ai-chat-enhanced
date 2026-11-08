@@ -5,15 +5,17 @@ import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 
 // safeStorage は vi.fn() で定義し、beforeEach で実装を設定する。
-// 実際の safeStorage と同様に「isEncryptionAvailable() が false のときは
-// encryptString/decryptString が例外を投げる」挙動にして、フォールバック分岐を検証する。
+// 実際の safeStorage と同様に「暗号化が利用不可のときは
+// encryptStringAsync/decryptStringAsync が reject する」挙動にして、フォールバック分岐を検証する。
+// 同期 API（isEncryptionAvailable/encryptString/decryptString）は Electron 46 で削除されるため
+// モックに含めず、実装が誤って呼んだ場合は TypeError で失敗させる。
 vi.mock("electron", () => ({
   app: { getPath: vi.fn(() => tmpdir()) },
   safeStorage: {
-    isEncryptionAvailable: vi.fn(),
+    isAsyncEncryptionAvailable: vi.fn(),
     getSelectedStorageBackend: vi.fn(),
-    encryptString: vi.fn(),
-    decryptString: vi.fn(),
+    encryptStringAsync: vi.fn(),
+    decryptStringAsync: vi.fn(),
   },
 }));
 
@@ -37,15 +39,19 @@ describe("SettingsStore", () => {
 
   beforeEach(async () => {
     // safeStorage モック: 可用性チェックを通過した場合のみ成功（実装の呼び分けを検証）
-    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(true);
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
     vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue("kwallet");
-    vi.mocked(safeStorage.encryptString).mockImplementation((s: string) => {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("safeStorage unavailable");
+    vi.mocked(safeStorage.encryptStringAsync).mockImplementation(async (s: string) => {
+      if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+        throw new Error("safeStorage unavailable");
+      }
       return Buffer.from(s, "utf-8");
     });
-    vi.mocked(safeStorage.decryptString).mockImplementation((b: Buffer) => {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("safeStorage unavailable");
-      return b.toString("utf-8");
+    vi.mocked(safeStorage.decryptStringAsync).mockImplementation(async (b: Buffer) => {
+      if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+        throw new Error("safeStorage unavailable");
+      }
+      return { result: b.toString("utf-8"), shouldReEncrypt: false };
     });
 
     tempPath = join(tmpdir(), `settings-test-${randomUUID()}.json`);
@@ -69,9 +75,7 @@ describe("SettingsStore", () => {
   it("credentials.enc の保存に失敗したら settings.json を元の値へ戻す", async () => {
     await store.updateSettings({ moocsUsername: "old-user", moocsPassword: "old-pass" });
 
-    vi.mocked(safeStorage.encryptString).mockImplementationOnce(() => {
-      throw new Error("encrypt failed");
-    });
+    vi.mocked(safeStorage.encryptStringAsync).mockRejectedValueOnce(new Error("encrypt failed"));
     await expect(
       store.updateSettings({ moocsUsername: "new-user", moocsPassword: "new-pass" })
     ).rejects.toThrow("encrypt failed");
@@ -254,12 +258,10 @@ describe("SettingsStore", () => {
     expect(await exists(`${credPath}.bak`)).toBe(true);
   });
 
-  it("safeStorage.decryptString 自体が例外を投げる場合も .bak に退避し機密は空にフォールバックする", async () => {
+  it("safeStorage.decryptStringAsync 自体が reject する場合も .bak に退避し機密は空にフォールバックする", async () => {
     await store.updateSettings({ apiKey: "sk-real", moocsPassword: "secret" });
-    // decryptString が例外を投げる状況（OS 復号エラー相当）をシミュレート
-    vi.mocked(safeStorage.decryptString).mockImplementation(() => {
-      throw new Error("decrypt failed");
-    });
+    // decryptStringAsync が reject する状況（OS 復号エラー相当）をシミュレート
+    vi.mocked(safeStorage.decryptStringAsync).mockRejectedValue(new Error("decrypt failed"));
 
     const reloaded = new SettingsStore();
     await reloaded.init(tempPath);
@@ -270,7 +272,7 @@ describe("SettingsStore", () => {
   });
 
   it("safeStorage が利用不可の場合は秘密情報を平文保存しない", async () => {
-    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
 
     const fallback = new SettingsStore();
     await fallback.init(tempPath);
@@ -282,9 +284,64 @@ describe("SettingsStore", () => {
     expect(fallback.getRawSettings().moocsPassword).toBe("");
   });
 
-  it("Linux の basic_text バックエンドを安全な保存先として扱わない", () => {
+  it("Linux の basic_text バックエンドを安全な保存先として扱わない", async () => {
     vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue("basic_text");
-    expect(isSecureStorageAvailable("linux")).toBe(false);
+    await expect(isSecureStorageAvailable("linux")).resolves.toBe(false);
+    // basic_text の判定は Linux に限る
+    await expect(isSecureStorageAvailable("win32")).resolves.toBe(true);
+  });
+
+  it("Linux の basic_text では資格情報を保存しない", async () => {
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue("basic_text");
+    vi.mocked(safeStorage.encryptStringAsync).mockClear();
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await expect(store.updateSettings({ apiKey: "sk-basic-text" })).rejects.toThrow(
+        "安全な資格情報ストレージ"
+      );
+      expect(await exists(credPath)).toBe(false);
+      expect(safeStorage.encryptStringAsync).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("decryptStringAsync が shouldReEncrypt を返したら暗号化し直して保存する", async () => {
+    await store.updateSettings({ apiKey: "sk-rotate", moocsPassword: "rotate-pass" });
+    vi.mocked(safeStorage.encryptStringAsync).mockClear();
+    vi.mocked(safeStorage.decryptStringAsync).mockImplementationOnce(async (b: Buffer) => ({
+      result: b.toString("utf-8"),
+      shouldReEncrypt: true,
+    }));
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(reloaded.getRawSettings()).toMatchObject({
+      apiKey: "sk-rotate",
+      moocsPassword: "rotate-pass",
+    });
+    expect(safeStorage.encryptStringAsync).toHaveBeenCalledTimes(1);
+    expect(await exists(credPath)).toBe(true);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
+  });
+
+  it("再暗号化に失敗しても復号できた資格情報を退避しない", async () => {
+    await store.updateSettings({ apiKey: "sk-keep", moocsPassword: "keep-pass" });
+    const before = await fs.readFile(credPath, "utf-8");
+    vi.mocked(safeStorage.decryptStringAsync).mockImplementationOnce(async (b: Buffer) => ({
+      result: b.toString("utf-8"),
+      shouldReEncrypt: true,
+    }));
+    vi.mocked(safeStorage.encryptStringAsync).mockRejectedValueOnce(new Error("encrypt failed"));
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(reloaded.getRawSettings().apiKey).toBe("sk-keep");
+    expect(await fs.readFile(credPath, "utf-8")).toBe(before);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
   });
 
   it("旧版の平文フォールバックは safeStorage で暗号化し直す", async () => {
@@ -303,7 +360,7 @@ describe("SettingsStore", () => {
   it("暗号化できない環境では旧版の平文資格情報を残さない", async () => {
     const plaintext = JSON.stringify({ apiKey: "legacy-key", moocsPassword: "legacy-pass" });
     await fs.writeFile(credPath, `plaintext:${Buffer.from(plaintext).toString("base64")}`, "utf-8");
-    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
 
     const migrated = new SettingsStore();
     await migrated.init(tempPath);
