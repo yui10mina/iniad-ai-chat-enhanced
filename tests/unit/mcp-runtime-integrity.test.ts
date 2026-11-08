@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "fs";
 import { tmpdir } from "os";
 import path from "path";
@@ -48,6 +48,25 @@ describe("bundled MCP runtime Node.js version", () => {
 
   it("matches the engines requirement in package.json", () => {
     expect(packageMetadata.engines?.node).toBe(`>=${MIN_MCP_RUNTIME_NODE_VERSION}`);
+  });
+
+  it("stops before deleting or copying anything on an older Node.js", () => {
+    const nodeFs = moduleRequire("node:fs") as typeof import("node:fs");
+    // If the version check were removed, the build would reach rmSync and fail here instead of
+    // deleting and rebuilding the real .mcp-runtime.
+    const rmSync = vi.spyOn(nodeFs, "rmSync").mockImplementation(() => {
+      throw new Error("rmSync reached");
+    });
+    const original = Object.getOwnPropertyDescriptor(process.versions, "node");
+    if (!original) throw new Error("process.versions.node is missing");
+    Object.defineProperty(process.versions, "node", { ...original, value: "20.17.0" });
+    try {
+      expect(() => buildMcpRuntime(path.resolve("."))).toThrow("requires Node.js 22.12.0 or later");
+      expect(rmSync).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process.versions, "node", original);
+      rmSync.mockRestore();
+    }
   });
 });
 

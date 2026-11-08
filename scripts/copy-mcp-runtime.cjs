@@ -154,9 +154,10 @@ function buildMcpRuntime(projectDir) {
   const nodeVersion = process.versions.node;
   if (!isSupportedMcpRuntimeNodeVersion(nodeVersion)) {
     throw new Error(
-      `Packaging requires Node.js ${MIN_MCP_RUNTIME_NODE_VERSION} or later because the running ` +
-        `Node.js is bundled as the MCP runtime, but this is Node.js ${nodeVersion}. ` +
-        "Switch to Node.js 22.12 or later and run the build again."
+      `Building the MCP runtime (npm start, npm run package) requires Node.js ` +
+        `${MIN_MCP_RUNTIME_NODE_VERSION} or later because the running Node.js is copied into ` +
+        `the runtime, but this is Node.js ${nodeVersion}. ` +
+        "Switch to Node.js 22.12 or later and run the command again."
     );
   }
   const targetRoot = path.join(resolvedProjectDir, ".mcp-runtime");
