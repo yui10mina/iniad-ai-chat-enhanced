@@ -1,5 +1,21 @@
 # INIAD AI Chat Enhanced 設計書（MVP）
 
+> [!NOTE]
+> **この文書は MVP 時点（2026 年 4 月）の初期設計です。現在の実装とは異なります。**
+> 当時の設計判断の記録として残しています。現在の動作はソースコードを正としてください。
+>
+> 主な違いは次のとおりです。
+>
+> | 項目 | この文書（初期設計） | 現在の実装 |
+> | --- | --- | --- |
+> | 回答の生成 | 検索してからプロンプトを組み立てる固定の RAG パイプライン（§6.4、§8、§9） | LLM がツールを選んで MOOCs を調べるエージェント型（`src/main/services/chat-agent.ts`）。2026 年 6 月の PR #21 で移行 |
+> | MCP サーバーの起動 | `npx` 経由で自動起動（§1、§6.5） | Node.js、MCP、Chromium を `.mcp-runtime` にまとめて配布物に同梱し、起動前に SHA-256 で照合（README の「MCP 配布ランタイム」） |
+> | Web 検索 | `google-sr` によるスクレイピング（§6.8） | DuckDuckGo Instant Answer API（`src/main/services/web-search-client.ts`） |
+> | 設定画面の接続テスト | API と MCP の両方（§6.3 の `settings:test-api`、`settings:test-mcp`） | MOOCs のみ。入力した値でログインを確かめてから保存する（PR #29） |
+>
+> §6.7（設定の保存）は 2026 年 7 月に、設定済みフラグ方式と safeStorage による暗号化へ更新済みです。
+> `docs/assignment.md` が参照する §6.3 の IPC 定義も、当時の内容のまま残しています。
+
 ## 1. 設計方針
 
 - MVP は「MOOCs 資料に基づく回答品質」を最優先とする

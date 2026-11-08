@@ -126,7 +126,7 @@ describe("api-client", () => {
     controller.abort();
 
     await expect(request).rejects.toEqual(
-      expect.objectContaining<ApiRequestError>({ kind: "cancelled" })
+      expect.objectContaining<Partial<ApiRequestError>>({ kind: "cancelled" })
     );
   });
 
@@ -149,6 +149,6 @@ describe("api-client", () => {
         timeoutMs: 0,
         maxAttempts: 1,
       })
-    ).rejects.toEqual(expect.objectContaining<ApiRequestError>({ kind: "timeout" }));
+    ).rejects.toEqual(expect.objectContaining<Partial<ApiRequestError>>({ kind: "timeout" }));
   });
 });

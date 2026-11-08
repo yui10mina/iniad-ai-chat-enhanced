@@ -9,7 +9,7 @@ INIAD（東洋大学 情報連携学部）の学生向けに、MOOCs 講義資�
 - 参照元（Citation）の表示
 - 設定画面（APIキー・モデル・MOOCs 認証情報）
 - フォールバック（MCP 未接続時もプレーン会話可能）
-- Web 検索（google-sr によるスクレイピング）
+- Web 検索（DuckDuckGo Instant Answer API）
 
 ## 必要環境
 
@@ -27,7 +27,7 @@ Electron のバイナリは `npm install` では取得されず、初回の `npm
 ### 1. リポジトリをクローン
 
 ```bash
-git clone https://github.com/Ryosuke-Asano/iniad-ai-chat-enhanced.git
+git clone https://github.com/yui10mina/iniad-ai-chat-enhanced.git
 cd iniad-ai-chat-enhanced
 ```
 
@@ -82,12 +82,14 @@ npm exec playwright install chromium
 ```
 iniad-ai-chat-enhanced/
 ├── docs/
-│   ├── design.md         # 詳細設計書
+│   ├── design.md         # 初期設計書（MVP 時点。現在の実装とは異なる）
 │   ├── assignment.md     # タスク割当表
 │   └── proposal.md       # 提案書
 ├── src/
 │   ├── main/             # Main プロセス
-│   │   └── index.ts      # エントリポイント（BrowserWindow生成）
+│   │   ├── index.ts      # エントリポイント（BrowserWindow生成）
+│   │   ├── ipc-handlers.ts # IPC ハンドラー
+│   │   └── services/     # エージェント、MCP クライアント、API クライアント、設定の保存など
 │   ├── preload/          # Preload スクリプト
 │   │   ├── preload.ts    # contextBridge 定義
 │   │   └── index.d.ts    # Renderer 向け型宣言
@@ -103,6 +105,8 @@ iniad-ai-chat-enhanced/
 │           ├── search.ts # SearchResult, CacheEntry
 │           ├── errors.ts # AppError, ErrorCode
 │           └── index.ts  # Barrel export
+├── tests/                # Vitest のテスト（unit と integration）
+├── scripts/              # MCP ランタイムの同梱・検証、索引の生成
 ├── forge.config.ts       # electron-forge 設定
 ├── webpack.main.config.js
 ├── webpack.preload.config.js
@@ -116,7 +120,7 @@ iniad-ai-chat-enhanced/
 ## ドキュメント
 
 - [提案書](docs/proposal.md) — プロジェクトの背景・目的・技術選定
-- [詳細設計書](docs/design.md) — アーキテクチャ・API・セキュリティ設計
+- [初期設計書](docs/design.md) — MVP 時点（2026 年 4 月）の設計。回答の生成方式、MCP の起動方法、Web 検索などは現在の実装と異なります（冒頭に差分の一覧あり）
 - [タスク割当表](docs/assignment.md) — メンバー別タスク・スケジュール
 
 ## ライセンス
