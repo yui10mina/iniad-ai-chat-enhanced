@@ -36,6 +36,7 @@ describe("SettingsStore", () => {
   let store: SettingsStore;
   let tempPath: string;
   let credPath: string;
+  let testDir: string;
 
   beforeEach(async () => {
     // safeStorage モック: 可用性チェックを通過した場合のみ成功（実装の呼び分けを検証）
@@ -54,20 +55,17 @@ describe("SettingsStore", () => {
       return { result: b.toString("utf-8"), shouldReEncrypt: false };
     });
 
-    tempPath = join(tmpdir(), `settings-test-${randomUUID()}.json`);
-    credPath = join(dirname(tempPath), "credentials.enc");
+    // テストごとに専用のフォルダを使い、並行実行や他のテストのファイルと干渉させない。
+    testDir = await fs.mkdtemp(join(tmpdir(), "settings-test-"));
+    tempPath = join(testDir, "settings.json");
+    credPath = join(testDir, "credentials.enc");
     store = new SettingsStore();
     await store.init(tempPath);
   });
 
   afterEach(async () => {
-    for (const p of [tempPath, credPath, `${credPath}.bak`]) {
-      try {
-        await fs.unlink(p);
-      } catch {
-        // ファイルがない場合は無視
-      }
-    }
+    vi.restoreAllMocks();
+    await fs.rm(testDir, { recursive: true, force: true });
   });
 
   // ── 基本テスト（暗号化下でも契約不变） ──
@@ -387,6 +385,97 @@ describe("SettingsStore", () => {
     const stored = await fs.readFile(credPath, "utf-8");
     expect(stored).not.toContain("plaintext:");
     expect(stored).not.toContain("legacy-key");
+  });
+
+  it("暗号化機能が一時的に使えなくても credentials.enc を退避せず、使えるようになれば読める", async () => {
+    await store.updateSettings({ apiKey: "sk-keep", moocsPassword: "keep-pass" });
+    const before = await fs.readFile(credPath, "utf-8");
+
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
+    const unavailable = new SettingsStore();
+    await unavailable.init(tempPath);
+    expect(unavailable.getRawSettings().apiKey).toBe("");
+    expect(await fs.readFile(credPath, "utf-8")).toBe(before);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
+
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
+    const available = new SettingsStore();
+    await available.init(tempPath);
+    expect(available.getRawSettings()).toMatchObject({
+      apiKey: "sk-keep",
+      moocsPassword: "keep-pass",
+    });
+  });
+
+  it("復号に失敗しても既存の .bak を上書きしない", async () => {
+    await fs.writeFile(`${credPath}.bak`, "older-backup", "utf-8");
+    await store.updateSettings({ apiKey: "sk-real", moocsPassword: "secret" });
+    await fs.writeFile(credPath, "broken-content", "utf-8");
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(await fs.readFile(`${credPath}.bak`, "utf-8")).toBe("older-backup");
+    const backups = (await fs.readdir(testDir)).filter(
+      (name) =>
+        name !== "credentials.enc.bak" &&
+        name.startsWith("credentials.enc.") &&
+        name.endsWith(".bak")
+    );
+    expect(backups).toHaveLength(1);
+    expect(await fs.readFile(join(testDir, backups[0]), "utf-8")).toBe("broken-content");
+  });
+
+  it("旧版の平文の移行で保存に失敗したら、旧ファイルを消さず次回起動で移行し直す", async () => {
+    const plaintext = JSON.stringify({ apiKey: "legacy-key", moocsPassword: "legacy-pass" });
+    const legacyContent = `plaintext:${Buffer.from(plaintext).toString("base64")}`;
+    await fs.writeFile(credPath, legacyContent, "utf-8");
+    vi.mocked(safeStorage.encryptStringAsync).mockRejectedValueOnce(new Error("encrypt failed"));
+
+    const failed = new SettingsStore();
+    await failed.init(tempPath);
+    expect(await fs.readFile(credPath, "utf-8")).toBe(legacyContent);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
+
+    const retried = new SettingsStore();
+    await retried.init(tempPath);
+    expect(retried.getRawSettings().apiKey).toBe("legacy-key");
+    expect(await fs.readFile(credPath, "utf-8")).not.toContain("plaintext:");
+  });
+
+  it("Windows で対象ファイルが一時的に開かれていても、置き換えを再試行して保存する", async () => {
+    const realRename = fs.rename.bind(fs);
+    let failures = 0;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (String(to).endsWith("credentials.enc") && failures < 2) {
+        failures++;
+        throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+      }
+      return realRename(from, to);
+    });
+
+    await store.updateSettings({ apiKey: "sk-retry", moocsPassword: "retry-pass" });
+    vi.restoreAllMocks();
+
+    expect(failures).toBe(2);
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+    expect(reloaded.getRawSettings().apiKey).toBe("sk-retry");
+  });
+
+  it("起動時に古い一時ファイルだけを消す", async () => {
+    const stale = `${credPath}.1234.${randomUUID()}.tmp`;
+    const fresh = `${credPath}.5678.${randomUUID()}.tmp`;
+    await fs.writeFile(stale, "stale", "utf-8");
+    await fs.writeFile(fresh, "fresh", "utf-8");
+    const old = new Date(Date.now() - 5 * 60_000);
+    await fs.utimes(stale, old, old);
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(await exists(stale)).toBe(false);
+    expect(await exists(fresh)).toBe(true);
   });
 
   it("暗号化できない環境では旧版の平文資格情報を残さない", async () => {

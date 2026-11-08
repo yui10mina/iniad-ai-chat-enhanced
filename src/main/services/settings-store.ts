@@ -11,7 +11,7 @@
 import { app, safeStorage } from "electron";
 import { randomUUID } from "crypto";
 import { promises as fs } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename } from "path";
 import {
   AppSettings,
   DEFAULT_SETTINGS,
@@ -24,6 +24,26 @@ import {
 const SETTINGS_FILE = "settings.json";
 /** 機密情報（APIキー・MOOCsパスワード）の暗号化ファイル名 */
 const CREDENTIALS_FILE = "credentials.enc";
+/** 置き換え前の一時ファイルの接尾辞 */
+const TEMP_FILE_SUFFIX = ".tmp";
+/** この時間より古い一時ファイルは、書き込み途中で終了した残りとみなして消す */
+const STALE_TEMP_FILE_MS = 60_000;
+/** Windows で対象ファイルを他プロセスが開いているときの rename の再試行間隔 */
+const RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400];
+
+async function renameWithRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const retryable = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+      if (!retryable || attempt >= RENAME_RETRY_DELAYS_MS.length) throw error;
+      await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
 
 /** 旧版が平文フォールバックで保存したファイルを検出するためのプレフィックス */
 const PLAINTEXT_PREFIX = "plaintext:";
@@ -86,8 +106,10 @@ export class SettingsStore {
       const userDataPath = app.getPath("userData");
       this.settingsPath = join(userDataPath, SETTINGS_FILE);
     }
-    // credentials.enc は settings.json と同��ディレクトリに置く
+    // credentials.enc は settings.json と同じディレクトリに置く
     this.credentialsPath = join(dirname(this.settingsPath), CREDENTIALS_FILE);
+
+    await this.removeStaleTempFiles();
 
     // マイグレーションとファイル作成: 書き込みエラーは呼び出し側へ伝播させる
     // （一時的な書き込み失敗で既存の正常な設定をデフォルト値で上書きしないため）
@@ -277,10 +299,28 @@ export class SettingsStore {
       return empty;
     }
 
+    // 暗号化機能が一時的に使えないだけなら、ファイルは動かさない（次回起動で読める）。
+    if (!(await isSecureStorageAvailable())) {
+      console.warn("[SettingsStore] Secure storage is unavailable; credentials were not loaded");
+      return empty;
+    }
+
+    let content: string;
+    try {
+      content = await fs.readFile(this.credentialsPath, "utf-8");
+    } catch {
+      console.warn("[SettingsStore] Could not read credentials; keeping the file");
+      return empty;
+    }
+    // 移行できなかった旧形式の平文は、次回起動で移行し直すために残す。
+    if (content.startsWith(PLAINTEXT_PREFIX)) {
+      console.warn("[SettingsStore] Legacy credentials are not migrated yet; keeping the file");
+      return empty;
+    }
+
     let secrets: Secrets;
     let shouldReEncrypt: boolean;
     try {
-      const content = await fs.readFile(this.credentialsPath, "utf-8");
       const decrypted = await this.decryptSecrets(content);
       const parsed = JSON.parse(decrypted.result) as Partial<Secrets>;
       secrets = {
@@ -292,7 +332,7 @@ export class SettingsStore {
       // 復号失敗（破損/別PC持ち込みでDPAPI復号不可）→ .bak に退避
       console.warn("[SettingsStore] Credential decryption failed; re-entry is required");
       try {
-        await fs.rename(this.credentialsPath, `${this.credentialsPath}.bak`);
+        await fs.rename(this.credentialsPath, await this.unusedBackupPath());
       } catch {
         // リネーム失敗（権限等）は無視
       }
@@ -398,14 +438,51 @@ export class SettingsStore {
    * credentials.enc は唯一のコピーなので、次回起動で復号できず .bak に退避され、元に戻せない。
    */
   private async writeFileAtomic(filePath: string, content: string): Promise<void> {
-    const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+    const tempPath = `${filePath}.${process.pid}.${randomUUID()}${TEMP_FILE_SUFFIX}`;
     try {
-      await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
+      // flush: rename より先に中身をディスクへ書き切る（電源断でも空のファイルを残さない）
+      await fs.writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600, flush: true });
       await this.chmod0600(tempPath);
-      await fs.rename(tempPath, filePath);
+      await renameWithRetry(tempPath, filePath);
     } catch (error) {
       await fs.unlink(tempPath).catch(() => undefined);
       throw error;
+    }
+  }
+
+  /** 既存の .bak を上書きしないよう、空いている退避先の名前を返す。 */
+  private async unusedBackupPath(): Promise<string> {
+    const backupPath = `${this.credentialsPath}.bak`;
+    if (!(await this.fileExists(backupPath))) return backupPath;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return `${this.credentialsPath}.${stamp}.bak`;
+  }
+
+  /**
+   * 書き込み途中で終了したときに残った一時ファイルを消す。
+   * 書き込み中の別プロセスのファイルを消さないよう、一定時間たったものだけを対象にする。
+   */
+  private async removeStaleTempFiles(): Promise<void> {
+    const directory = dirname(this.settingsPath);
+    const prefixes = [basename(this.settingsPath), basename(this.credentialsPath)].map(
+      (name) => `${name}.`
+    );
+    let names: string[];
+    try {
+      names = await fs.readdir(directory);
+    } catch {
+      return;
+    }
+    const now = Date.now();
+    for (const name of names) {
+      if (!name.endsWith(TEMP_FILE_SUFFIX) || !prefixes.some((p) => name.startsWith(p))) continue;
+      const tempPath = join(directory, name);
+      try {
+        const { mtimeMs } = await fs.stat(tempPath);
+        if (now - mtimeMs >= STALE_TEMP_FILE_MS) await fs.unlink(tempPath);
+      } catch {
+        // 消せない一時ファイルは読み込みに使わないので、そのまま続ける
+      }
     }
   }
 
@@ -472,19 +549,29 @@ export class SettingsStore {
       return;
     }
 
+    let legacy: Secrets;
     try {
       const decoded = Buffer.from(stored.slice(PLAINTEXT_PREFIX.length), "base64").toString(
         "utf-8"
       );
       const parsed = JSON.parse(decoded) as Partial<Secrets>;
-      await this.saveCredentialsFile({
+      legacy = {
         apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
         moocsPassword: typeof parsed.moocsPassword === "string" ? parsed.moocsPassword : "",
-      });
-      console.log("[SettingsStore] Migrated insecure legacy credentials to safeStorage");
+      };
     } catch {
       await fs.unlink(this.credentialsPath);
       console.warn("[SettingsStore] Removed unreadable insecure legacy credentials");
+      return;
+    }
+
+    // 保存の失敗（他プロセスがファイルを開いている等）で旧ファイルを消すと資格情報を失う。
+    // 旧ファイルは残し、次回起動で移行し直す。
+    try {
+      await this.saveCredentialsFile(legacy);
+      console.log("[SettingsStore] Migrated insecure legacy credentials to safeStorage");
+    } catch {
+      console.warn("[SettingsStore] Could not migrate legacy credentials; will retry next start");
     }
   }
 
