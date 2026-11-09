@@ -13,6 +13,7 @@ import type {
   McpConnectionState,
   McpStatus,
 } from "../../shared/types";
+import { CHAT_MODEL } from "../../shared/types/settings";
 
 export interface MaterialContextInput {
   title: string;
@@ -62,7 +63,7 @@ export class InMemoryStore {
   private materialContext: MaterialContextEntry[] = [];
   private mcpStatus: McpStatus = "disconnected";
   private mcpConnection: McpConnectionState = { status: "disconnected" };
-  private currentModel: string = "gpt-5.4-nano";
+  private currentModel: string = CHAT_MODEL;
   private hasApiKey: boolean = false;
 
   addMessage(message: ChatTurn): void {

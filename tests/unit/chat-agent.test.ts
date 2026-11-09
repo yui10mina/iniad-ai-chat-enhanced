@@ -94,6 +94,9 @@ describe("ChatAgent", () => {
     const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(firstBody.tools).toBeDefined();
     expect(firstBody.tool_choice).toBe("auto");
+    // gpt-6-luna はツールと推論を同時に使えず、temperature も既定値しか受け付けない。
+    expect(firstBody.reasoning_effort).toBe("none");
+    expect(firstBody).not.toHaveProperty("temperature");
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(
       secondBody.tools.some(

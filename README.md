@@ -7,7 +7,7 @@ INIAD（東洋大学 情報連携学部）の学生向けに、MOOCs 講義資�
 - INIAD API（OpenAI 互換）を利用したチャット
 - MCP 経由での MOOCs 講義資料検索・参照
 - 参照元（Citation）の表示
-- 設定画面（APIキー・モデル・MOOCs 認証情報）
+- 設定画面（APIキー・MOOCs 認証情報）。モデルは `gpt-6-luna` に固定
 - フォールバック（MCP 未接続時もプレーン会話可能）
 - Web 検索（DuckDuckGo Instant Answer API）
 

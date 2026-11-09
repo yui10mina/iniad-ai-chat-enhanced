@@ -36,11 +36,12 @@ describe("IPC input validation", () => {
   });
 
   it("accepts only known settings and official API origin", () => {
-    expect(validateSettingsInput({ model: "gpt-5.4-mini" })).toEqual({
-      model: "gpt-5.4-mini",
+    expect(validateSettingsInput({ model: "gpt-6-luna" })).toEqual({
+      model: "gpt-6-luna",
     });
     expect(() => validateSettingsInput({ unexpected: "value" })).toThrow("許可されていない");
     expect(() => validateSettingsInput({ model: "arbitrary-model" })).toThrow("モデル");
+    expect(() => validateSettingsInput({ model: "gpt-5.4-mini" })).toThrow("モデル");
     expect(validateApiBaseUrl("https://api.openai.iniad.org/api/v1/")).toBe(
       "https://api.openai.iniad.org/api/v1"
     );

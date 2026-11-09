@@ -176,10 +176,19 @@ describe("SettingsStore", () => {
     expect(reloaded.getRawSettings()).toEqual(
       expect.objectContaining({
         baseURL: "https://api.openai.iniad.org/api/v1",
-        model: "gpt-5.4-nano",
+        model: "gpt-6-luna",
         moocsUsername: "",
       })
     );
+  });
+
+  it("以前の版で保存した gpt-5.4 系のモデルは、読み込み時に gpt-6-luna へ切り替える", async () => {
+    await fs.writeFile(tempPath, JSON.stringify({ model: "gpt-5.4-nano" }), "utf-8");
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(reloaded.getRawSettings().model).toBe("gpt-6-luna");
   });
 
   it("旧形式（平文 settings.json に機密含む）から credentials.enc に自動移行する", async () => {
