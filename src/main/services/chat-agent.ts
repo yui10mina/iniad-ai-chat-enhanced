@@ -266,10 +266,12 @@ export class ChatAgent {
         ]
       : messages;
 
+    // gpt-6-luna は Chat Completions で関数ツールと推論を同時に使えないため、
+    // reasoning_effort を "none" にする。temperature も既定値（1）しか受け付けないので送らない。
     const body: Record<string, unknown> = {
       model: settings.model,
       messages: requestMessages,
-      temperature: 0.4,
+      reasoning_effort: "none",
       max_completion_tokens: 2048,
     };
 

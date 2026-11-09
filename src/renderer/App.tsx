@@ -4,7 +4,7 @@ import { ChatInput } from "./components/ChatInput";
 import { StatusBar } from "./components/StatusBar";
 import { SettingsView } from "./components/SettingsView";
 import type { ChatTurn, MaterialContextSummary } from "../shared/types/chat";
-import type { McpConnectionState } from "../shared/types/settings";
+import { CHAT_MODEL, type McpConnectionState } from "../shared/types/settings";
 import "./index.css";
 
 /** 現在表示中のビュー */
@@ -35,7 +35,7 @@ const App: React.FC = () => {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [mcpConnection, setMcpConnection] = useState<McpConnectionState>(INITIAL_MCP_CONNECTION);
-  const [modelName, setModelName] = useState("GPT-5.4-nano");
+  const [modelName, setModelName] = useState(CHAT_MODEL);
   const [currentView, setCurrentView] = useState<ViewType>("chat");
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [inputResetToken, setInputResetToken] = useState(0);

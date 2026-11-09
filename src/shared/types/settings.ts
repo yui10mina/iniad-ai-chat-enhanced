@@ -46,11 +46,19 @@ export interface PublicAppSettings {
 /** 認証情報を送信してよい公式 INIAD API ホスト。 */
 export const OFFICIAL_API_HOST = "api.openai.iniad.org";
 
+/**
+ * チャットに使うモデル。INIAD Slack の「gpt6-luna」と同じモデル。
+ *
+ * 設定画面では選ばせない。保存済みの設定に別のモデル名が残っていても、
+ * 読み込み時にこの値へ戻す（SettingsStore の許可リスト）。
+ */
+export const CHAT_MODEL = "gpt-6-luna";
+
 /** AppSettings のデフォルト値 */
 export const DEFAULT_SETTINGS: AppSettings = {
   apiKey: "",
   baseURL: `https://${OFFICIAL_API_HOST}/api/v1`,
-  model: "gpt-5.4-nano",
+  model: CHAT_MODEL,
   moocsUsername: "",
   moocsPassword: "",
 };

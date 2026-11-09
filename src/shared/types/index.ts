@@ -22,7 +22,7 @@ export type {
   ConnectionTestResult,
 } from "./settings";
 
-export { DEFAULT_SETTINGS, OFFICIAL_API_HOST } from "./settings";
+export { CHAT_MODEL, DEFAULT_SETTINGS, OFFICIAL_API_HOST } from "./settings";
 
 export type {
   SearchResult,

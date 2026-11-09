@@ -1,5 +1,6 @@
 import { AppError } from "../shared/types/errors";
 import {
+  CHAT_MODEL,
   OFFICIAL_API_HOST,
   type McpCredentialTestInput,
   type PartialAppSettings,
@@ -15,7 +16,7 @@ const ALLOWED_SETTING_KEYS = new Set([
   "moocsUsername",
   "moocsPassword",
 ]);
-const ALLOWED_MODELS = new Set(["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"]);
+const ALLOWED_MODELS = new Set([CHAT_MODEL]);
 
 function invalid(message: string): never {
   throw new AppError("INVALID_INPUT", message);
