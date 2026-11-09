@@ -54,6 +54,12 @@ export interface ToolExecutionContext {
   slidesIndex?: SlidesIndexService;
   /** 同一チャット内の moocs_read_slide キャッシュ (url → content) */
   slideReadCache?: Map<string, string>;
+  /**
+   * 同一チャット内の moocs_login の状況。2 回目の moocs_login や、ほかの MOOCs ツールを
+   * 使ったあとの moocs_login は、セッション切れを疑っての呼び出しなので、覚えている
+   * ログイン結果を使わずに入り直す。
+   */
+  moocsLoginState?: { called: boolean; otherMoocsToolUsed?: boolean };
   signal?: AbortSignal;
 }
 
@@ -79,6 +85,9 @@ export async function executeAgentTool(
   }
   const argumentError = validateAgentToolArguments(toolName, args);
   if (argumentError) return { content: `Error: ${argumentError}`, citations: [] };
+  if (ctx.moocsLoginState && toolName.startsWith("moocs_") && toolName !== "moocs_login") {
+    ctx.moocsLoginState.otherMoocsToolUsed = true;
+  }
 
   const citations: Citation[] = [];
   const pageReader = new MoocsPageReader(
@@ -92,7 +101,12 @@ export async function executeAgentTool(
     switch (toolName) {
       case "moocs_login":
         return await runMoocsTool(ctx, async () => {
-          const result = await ctx.mcpClient.loginToMoocs(ctx.signal);
+          const state = ctx.moocsLoginState;
+          const forceLogin = state?.called === true || state?.otherMoocsToolUsed === true;
+          if (state) state.called = true;
+          const result = forceLogin
+            ? await ctx.mcpClient.loginToMoocs(ctx.signal)
+            : await ctx.mcpClient.ensureMoocsLogin(ctx.signal);
           return formatMcpResult(result, citations);
         });
 

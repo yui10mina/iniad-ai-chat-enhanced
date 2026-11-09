@@ -127,6 +127,7 @@ export class ChatAgent {
       });
     }
     const slideReadCache = new Map<string, string>();
+    const moocsLoginState = { called: false };
     let toolCallCount = 0;
     // Do not expose an outward web-search capability after untrusted prior/current
     // material has influenced the model. A single initial search may still be used
@@ -203,6 +204,7 @@ export class ChatAgent {
               mcpConnected: this.mcpClient.getStatus() === "connected",
               slidesIndex: this.slidesIndex,
               slideReadCache,
+              moocsLoginState,
               signal,
             });
           }

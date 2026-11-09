@@ -232,6 +232,8 @@ async function runChat(userText: string, controller: AbortController): Promise<C
         );
       }
     }
+    // 最初の AI の応答を待つ間に、ログインを済ませておく（ログイン済みなら何もしない）。
+    prewarmMoocsLogin();
 
     if (controller.signal.aborted) {
       throw new AppError("CHAT_CANCELLED", "リクエストがキャンセルされました");
@@ -366,7 +368,9 @@ async function runMcpCredentialTest(input: McpCredentialTestInput): Promise<Conn
 async function restoreStoredMcpConnection(): Promise<void> {
   if (shuttingDown) return;
   if (settingsStore.hasMoocsCredentials()) {
-    await reconnectAfterCredentialChange();
+    // 接続テストに失敗したあとの復元では、裏のログインはしない。保存されたパスワードが
+    // 古い可能性が高く、質問もされていないのに SSO へ間違ったパスワードを送ることになる。
+    await reconnectAfterCredentialChange({ prewarm: false });
     return;
   }
   await stopMcpConnection().catch(() => undefined);
@@ -392,14 +396,40 @@ function chatCancelledError(): AppError {
   return new AppError("CHAT_CANCELLED", "リクエストがキャンセルされました");
 }
 
-async function reconnectAfterCredentialChange(): Promise<void> {
+async function reconnectAfterCredentialChange(
+  options: { prewarm: boolean } = { prewarm: true }
+): Promise<void> {
   if (shuttingDown) return;
   const result = await reconnectMcp();
-  if (!result.connected) {
+  if (result.connected) {
+    if (options.prewarm) prewarmMoocsLogin("credential update");
+  } else {
     console.warn(
-      `[McpConnection] Credential update reconnect failed: ${result.state.error?.code ?? "unknown"}`
+      `[McpConnection] Credential update reconnect failed: ${connectionFailureLabel(result)}`
     );
   }
+}
+
+/**
+ * 接続できたら、質問を待たずに裏で MOOCs へログインしておく。ログイン済みなら何もしない。
+ * 失敗しても接続の状態は変わらない（McpClient.prewarmMoocsLogin）。本当の失敗は、
+ * AI が moocs_login を呼んだときに画面へ届く。
+ */
+function prewarmMoocsLogin(logLabel?: string): void {
+  if (shuttingDown || mcpClient.getStatus() !== "connected") return;
+  const startedAt = Date.now();
+  void mcpClient.prewarmMoocsLogin().then((loggedIn) => {
+    if (!logLabel) return;
+    const elapsed = Date.now() - startedAt;
+    if (loggedIn) console.log(`[McpConnection] MOOCs login ready (${logLabel}, ${elapsed} ms)`);
+    else console.warn(`[McpConnection] Background MOOCs login skipped or failed (${logLabel})`);
+  });
+}
+
+/** 接続できなかった理由をログ用に短く表す。手動の切断で止まった場合はエラーが空になる。 */
+function connectionFailureLabel(result: McpConnectionResult): string {
+  if (result.state.error?.code) return result.state.error.code;
+  return result.state.status === "disconnected" ? "cancelled" : "unknown";
 }
 
 function handleMcpConnectionIssue(error: McpClientError): void {
@@ -448,10 +478,9 @@ async function tryAutoConnectMcp(): Promise<void> {
   const result = await connectMcp();
   if (result.connected) {
     console.log("[McpConnection] Startup connection established");
+    prewarmMoocsLogin("startup");
   } else {
-    console.warn(
-      `[McpConnection] Startup connection failed: ${result.state.error?.code ?? "unknown"}`
-    );
+    console.warn(`[McpConnection] Startup connection failed: ${connectionFailureLabel(result)}`);
   }
 }
 

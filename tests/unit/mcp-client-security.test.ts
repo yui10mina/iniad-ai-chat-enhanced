@@ -83,20 +83,22 @@ function realpathSyncIgnoringBrowser(target: fs.PathLike, ...rest: unknown[]): u
   return (actualRealpathSync as (...args: unknown[]) => unknown)(target, ...rest);
 }
 
+function resetSdkMocks(): void {
+  vi.spyOn(fs, "realpathSync").mockImplementation(
+    realpathSyncIgnoringBrowser as typeof fs.realpathSync
+  );
+  sdkMocks.connect.mockReset().mockResolvedValue(undefined);
+  sdkMocks.ping.mockReset().mockResolvedValue({});
+  sdkMocks.listTools.mockReset().mockResolvedValue({ tools: availableTools() });
+  sdkMocks.callTool.mockReset().mockResolvedValue({ content: [] });
+  sdkMocks.clientClose.mockReset().mockResolvedValue(undefined);
+  sdkMocks.transportClose.mockReset().mockResolvedValue(undefined);
+  sdkMocks.transportOptions.length = 0;
+  sdkMocks.clientInstances.length = 0;
+}
+
 describe("McpClient security boundary", () => {
-  beforeEach(() => {
-    vi.spyOn(fs, "realpathSync").mockImplementation(
-      realpathSyncIgnoringBrowser as typeof fs.realpathSync
-    );
-    sdkMocks.connect.mockReset().mockResolvedValue(undefined);
-    sdkMocks.ping.mockReset().mockResolvedValue({});
-    sdkMocks.listTools.mockReset().mockResolvedValue({ tools: availableTools() });
-    sdkMocks.callTool.mockReset().mockResolvedValue({ content: [] });
-    sdkMocks.clientClose.mockReset().mockResolvedValue(undefined);
-    sdkMocks.transportClose.mockReset().mockResolvedValue(undefined);
-    sdkMocks.transportOptions.length = 0;
-    sdkMocks.clientInstances.length = 0;
-  });
+  beforeEach(resetSdkMocks);
 
   it("passes only allowlisted environment variables plus MCP credentials", () => {
     const env = buildMcpChildEnvironment(
@@ -473,5 +475,357 @@ describe("McpClient security boundary", () => {
     log.mockRestore();
     warn.mockRestore();
     error.mockRestore();
+  });
+});
+
+describe("McpClient MOOCs login reuse", () => {
+  beforeEach(() => {
+    resetSdkMocks();
+    vi.useRealTimers();
+  });
+
+  const LOGIN_TOOL = "loginToIniadMoocsWithIniadAccount";
+  const coursesResult = (count = 1) => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          courses: Array.from({ length: count }, (_, i) => ({ id: `C${i}`, title: `Course ${i}` })),
+        }),
+      },
+    ],
+  });
+  const calledToolNames = () =>
+    sdkMocks.callTool.mock.calls.map(
+      (call) => (call[0] as { params: { name: string } }).params.name
+    );
+  const loginCount = () => calledToolNames().filter((name) => name === LOGIN_TOOL).length;
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("reuses a successful login instead of logging in again", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValue(coursesResult());
+
+    const first = await client.ensureMoocsLogin();
+    const second = await client.ensureMoocsLogin();
+
+    expect(loginCount()).toBe(1);
+    expect(second).toBe(first);
+  });
+
+  it("shares one login between callers that arrive while it is running", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const login = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(login.promise);
+
+    const a = client.ensureMoocsLogin();
+    const b = client.loginToMoocs();
+    login.resolve(coursesResult());
+
+    await expect(Promise.all([a, b])).resolves.toHaveLength(2);
+    expect(loginCount()).toBe(1);
+  });
+
+  it("does not remember a login that returned no courses", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(0));
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(1));
+
+    await client.ensureMoocsLogin();
+    await client.ensureMoocsLogin();
+
+    expect(loginCount()).toBe(2);
+  });
+
+  it("logs in again once the remembered login is 20 minutes old", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValue(coursesResult());
+
+    await client.ensureMoocsLogin();
+    vi.setSystemTime(Date.now() + 19 * 60_000);
+    await client.ensureMoocsLogin();
+    expect(loginCount()).toBe(1);
+
+    vi.setSystemTime(Date.now() + 2 * 60_000);
+    await client.ensureMoocsLogin();
+    expect(loginCount()).toBe(2);
+  });
+
+  it("forgets the login when the connection is closed and reopened", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValue(coursesResult());
+    await client.ensureMoocsLogin();
+
+    await client.disconnect();
+    await client.connect("student", "password");
+    await client.ensureMoocsLogin();
+
+    expect(loginCount()).toBe(2);
+  });
+
+  it("forgets the login after an authentication failure", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult());
+    await client.ensureMoocsLogin();
+
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "Login failed: unauthorized" }],
+    });
+    await expect(client.loginToMoocs()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ code: "MCP_AUTH_FAILED" })
+    );
+    // 覚えていた結果を返さず、接続されていないことを伝える。
+    await expect(client.ensureMoocsLogin()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ code: "MCP_CONNECTION_FAILED" })
+    );
+
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult());
+    await client.ensureMoocsLogin();
+    expect(loginCount()).toBe(3);
+  });
+
+  it("still performs a real login for the settings connection test", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValue(coursesResult());
+    await client.ensureMoocsLogin();
+
+    await client.verifyMoocsLogin();
+
+    expect(loginCount()).toBe(2);
+  });
+
+  it("makes other tools wait until a running login has finished", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const login = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(login.promise);
+    sdkMocks.callTool.mockResolvedValue({ content: [] });
+
+    const loginDone = client.ensureMoocsLogin();
+    const navigateDone = client.navigateTo("https://moocs.iniad.org/courses/2026/COS201");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calledToolNames()).toEqual([LOGIN_TOOL]);
+
+    login.resolve(coursesResult());
+    await Promise.all([loginDone, navigateDone]);
+    expect(calledToolNames()).toEqual([LOGIN_TOOL, "browser_navigate"]);
+  });
+
+  it("lets a cancelled caller stop waiting without stopping the shared login", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const login = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(login.promise);
+    const controller = new AbortController();
+
+    const background = client.ensureMoocsLogin();
+    const cancelled = client.loginToMoocs(controller.signal);
+    controller.abort();
+    await expect(cancelled).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ code: "CHAT_CANCELLED" })
+    );
+
+    login.resolve(coursesResult());
+    await background;
+    await client.ensureMoocsLogin();
+    expect(loginCount()).toBe(1);
+  });
+
+  it("does not share a login that is still running on a closed connection", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const staleLogin = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(staleLogin.promise);
+
+    const background = client.ensureMoocsLogin();
+    await client.disconnect();
+    await client.connect("student", "password");
+
+    // 古いログインがまだ終わっていなくても、新しい接続では入り直す。
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult());
+    const fresh = client.loginToMoocs();
+    staleLogin.reject(new Error("Connection closed"));
+
+    await expect(fresh).resolves.toEqual(coursesResult());
+    await expect(background).rejects.toBeDefined();
+    expect(loginCount()).toBe(2);
+  });
+
+  it("does not let a login from a closed connection break the new connection", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const staleLogin = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(staleLogin.promise);
+    const listener = vi.fn();
+    client.onConnectionIssue(listener);
+
+    const background = client.ensureMoocsLogin();
+    await client.disconnect();
+    await client.connect("student", "password");
+    const closesBefore = sdkMocks.clientClose.mock.calls.length;
+
+    // 古い接続のログインは、client を閉じたことで失敗する。
+    staleLogin.reject(new Error("Connection closed"));
+    await expect(background).rejects.toBeDefined();
+
+    expect(client.getStatus()).toBe("connected");
+    expect(sdkMocks.clientClose.mock.calls.length).toBe(closesBefore);
+    expect(listener).not.toHaveBeenCalled();
+
+    // 新しい接続のログインは、古いログインを共有せずに行う。
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult());
+    await expect(client.loginToMoocs()).resolves.toEqual(coursesResult());
+  });
+
+  it("forgets the remembered login when a later login returns no courses", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(1));
+    await client.ensureMoocsLogin();
+
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(0));
+    await client.loginToMoocs();
+
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(1));
+    await client.ensureMoocsLogin();
+    expect(loginCount()).toBe(3);
+  });
+
+  it("forgets the remembered login when a later login fails without closing the connection", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(1));
+    await client.ensureMoocsLogin();
+
+    // 分類できないエラーでは接続を閉じないが、前のログインは信用しない。
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "something unexpected" }],
+    });
+    await expect(client.loginToMoocs()).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ kind: "unknown" })
+    );
+    expect(client.getStatus()).toBe("connected");
+
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(1));
+    await client.ensureMoocsLogin();
+    expect(loginCount()).toBe(3);
+  });
+
+  it("does not remember a login from a closed connection that succeeds late", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const staleLogin = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(staleLogin.promise);
+
+    const background = client.ensureMoocsLogin();
+    await client.disconnect();
+    await client.connect("other-student", "other-password");
+    staleLogin.resolve(coursesResult(1));
+    await background;
+
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult(2));
+    await expect(client.ensureMoocsLogin()).resolves.toEqual(coursesResult(2));
+    expect(loginCount()).toBe(2);
+  });
+
+  it("remembers a successful background login for the next question", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValue(coursesResult());
+
+    await expect(client.prewarmMoocsLogin()).resolves.toBe(true);
+    await client.ensureMoocsLogin();
+
+    expect(loginCount()).toBe(1);
+  });
+
+  it.each([
+    [
+      "an unreachable MOOCs site",
+      "Login failed: page.goto: net::ERR_NAME_NOT_RESOLVED at https://moocs.iniad.org/",
+    ],
+    ["a slow SSO redirect", "Login failed: page.waitForURL: Timeout 5000ms exceeded."],
+  ])("keeps the connection as it is when a background login fails on %s", async (_case, text) => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const listener = vi.fn();
+    client.onConnectionIssue(listener);
+    const closesBefore = sdkMocks.clientClose.mock.calls.length;
+    sdkMocks.callTool.mockResolvedValueOnce({ isError: true, content: [{ type: "text", text }] });
+
+    await expect(client.prewarmMoocsLogin()).resolves.toBe(false);
+
+    expect(client.getStatus()).toBe("connected");
+    expect(listener).not.toHaveBeenCalled();
+    expect(sdkMocks.clientClose.mock.calls.length).toBe(closesBefore);
+  });
+
+  it("waits two minutes before trying a failed background login again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const client = new McpClient();
+    await client.connect("student", "password");
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "Login failed: page.goto: net::ERR_INTERNET_DISCONNECTED" }],
+    });
+    await client.prewarmMoocsLogin();
+
+    vi.setSystemTime(Date.now() + 60_000);
+    await expect(client.prewarmMoocsLogin()).resolves.toBe(false);
+    expect(loginCount()).toBe(1);
+
+    vi.setSystemTime(Date.now() + 61_000);
+    sdkMocks.callTool.mockResolvedValueOnce(coursesResult());
+    await expect(client.prewarmMoocsLogin()).resolves.toBe(true);
+    expect(loginCount()).toBe(2);
+  });
+
+  it("retries a failed background login for the question and reports the real error", async () => {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const listener = vi.fn();
+    client.onConnectionIssue(listener);
+    const backgroundLogin = deferred<unknown>();
+    sdkMocks.callTool.mockReturnValueOnce(backgroundLogin.promise);
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "Login failed: unauthorized" }],
+    });
+
+    const background = client.prewarmMoocsLogin();
+    const question = client.ensureMoocsLogin();
+    backgroundLogin.resolve({
+      isError: true,
+      content: [{ type: "text", text: "Login failed: unauthorized" }],
+    });
+
+    await expect(background).resolves.toBe(false);
+    await expect(question).rejects.toEqual(
+      expect.objectContaining<Partial<McpClientError>>({ code: "MCP_AUTH_FAILED" })
+    );
+    expect(loginCount()).toBe(2);
+    expect(client.getStatus()).toBe("error");
+    expect(listener).toHaveBeenCalledTimes(1);
   });
 });
