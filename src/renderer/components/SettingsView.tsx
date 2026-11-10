@@ -7,7 +7,6 @@ import { buildMcpTestRequest, buildSavePayload, isMcpCredentialField } from "./m
 interface ValidationErrors {
   apiKey?: string;
   baseURL?: string;
-  model?: string;
   moocsUsername?: string;
   moocsPassword?: string;
 }
@@ -22,13 +21,6 @@ interface SettingsViewProps {
   /** 設定画面を閉じてチャット画面に戻る */
   onClose: () => void;
 }
-
-/** 利用可能なモデル一覧 */
-const AVAILABLE_MODELS = [
-  { value: "gpt-5.4-nano", label: "GPT-5.4 Nano (高速・低コスト)" },
-  { value: "gpt-5.4-mini", label: "GPT-5.4 Mini (バランス)" },
-  { value: "gpt-5.4", label: "GPT-5.4 (高性能)" },
-];
 
 /** URLバリデーション */
 function isValidURL(url: string): boolean {
@@ -60,11 +52,6 @@ function validateSettings(
   // ベースURL
   if (current.baseURL && !isValidURL(current.baseURL)) {
     errs.baseURL = "公式 INIAD API の HTTPS URL を入力してください";
-  }
-
-  // モデル
-  if (!current.model.trim()) {
-    errs.model = "モデルを選択してください";
   }
 
   // MOOCsユーザー名・パスワードはペア入力（空のパスワード欄は「変更なし」を表す）
@@ -385,7 +372,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
             <span className="settings-hint">
               {settings.hasApiKey
                 ? "✓ APIキーは設定済みです（変更時のみ入力）"
-                : "※ INIAD Slack「GPT-4o mini」で取得可能"}
+                : "※ INIAD Slack の「gpt6-luna」で取得可能"}
             </span>
           </div>
 
@@ -402,48 +389,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose }) => {
               placeholder={DEFAULT_SETTINGS.baseURL}
             />
             {errors.baseURL && <span className="settings-error">{errors.baseURL}</span>}
-          </div>
-        </section>
-
-        {/* ── モデル設定セクション ── */}
-        <section className="settings-section" id="settings-model">
-          <h3 className="settings-section-title">
-            <span className="settings-section-icon">
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                <path d="M12 3c-1.66 0-3 1.34-3 3v5h6V6c0-1.66-1.34-3-3-3z" />
-                <circle cx="12" cy="16" r="1" />
-              </svg>
-            </span>
-            モデル設定
-          </h3>
-
-          <div className="settings-field">
-            <label className="settings-label" htmlFor="settings-model-select">
-              使用モデル
-            </label>
-            <select
-              id="settings-model-select"
-              className={`settings-input settings-select ${errors.model ? "error" : ""}`}
-              value={settings.model}
-              onChange={(e) => updateField("model", e.target.value)}
-            >
-              {AVAILABLE_MODELS.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-            {errors.model && <span className="settings-error">{errors.model}</span>}
           </div>
         </section>
 

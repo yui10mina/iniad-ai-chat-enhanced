@@ -14,6 +14,7 @@ import { promises as fs } from "fs";
 import { join, dirname, basename } from "path";
 import {
   AppSettings,
+  CHAT_MODEL,
   DEFAULT_SETTINGS,
   OFFICIAL_API_HOST,
   PartialAppSettings,
@@ -47,7 +48,8 @@ async function renameWithRetry(from: string, to: string): Promise<void> {
 
 /** 旧版が平文フォールバックで保存したファイルを検出するためのプレフィックス */
 const PLAINTEXT_PREFIX = "plaintext:";
-const ALLOWED_MODELS = new Set(["gpt-5.4-nano", "gpt-5.4-mini", "gpt-5.4"]);
+/** 以前の版で保存された gpt-5.4 系などは、読み込み時に CHAT_MODEL へ戻す。 */
+const ALLOWED_MODELS = new Set([CHAT_MODEL]);
 
 /**
  * Reject Linux's unprotected fallback in addition to unavailable safeStorage.

@@ -5,6 +5,25 @@ const { createHash } = require("node:crypto");
 
 const RUNTIME_INTEGRITY_FILE = "integrity.json";
 const HASH_BUFFER_BYTES = 1024 * 1024;
+// The Node.js that runs `npm run package` is copied into the packaged MCP runtime, so
+// packaging with an older (end-of-life) Node.js would silently ship it to users.
+// Keep in sync with `engines.node` in package.json.
+const MIN_MCP_RUNTIME_NODE_VERSION = "22.12.0";
+
+function parseNodeVersion(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version).trim());
+  if (!match) throw new Error(`Unable to parse Node.js version: ${version}`);
+  return match.slice(1, 4).map(Number);
+}
+
+function isSupportedMcpRuntimeNodeVersion(version) {
+  const actual = parseNodeVersion(version);
+  const minimum = parseNodeVersion(MIN_MCP_RUNTIME_NODE_VERSION);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
+  }
+  return true;
+}
 
 function compareNames(left, right) {
   return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
@@ -132,6 +151,15 @@ function buildMcpRuntime(projectDir) {
   if (resolvedProjectDir !== scriptProjectDir) {
     throw new Error("Refusing to write MCP runtime outside this project");
   }
+  const nodeVersion = process.versions.node;
+  if (!isSupportedMcpRuntimeNodeVersion(nodeVersion)) {
+    throw new Error(
+      `Building the MCP runtime (npm start, npm run package) requires Node.js ` +
+        `${MIN_MCP_RUNTIME_NODE_VERSION} or later because the running Node.js is copied into ` +
+        `the runtime, but this is Node.js ${nodeVersion}. ` +
+        "Switch to Node.js 22.12 or later and run the command again."
+    );
+  }
   const targetRoot = path.join(resolvedProjectDir, ".mcp-runtime");
 
   fs.rmSync(targetRoot, { recursive: true, force: true });
@@ -215,4 +243,9 @@ function buildMcpRuntime(projectDir) {
   return targetRoot;
 }
 
-module.exports = { buildMcpRuntime, computeRuntimeTreeHash };
+module.exports = {
+  MIN_MCP_RUNTIME_NODE_VERSION,
+  buildMcpRuntime,
+  computeRuntimeTreeHash,
+  isSupportedMcpRuntimeNodeVersion,
+};

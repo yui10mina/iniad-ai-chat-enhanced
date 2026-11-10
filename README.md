@@ -7,7 +7,7 @@ INIAD（東洋大学 情報連携学部）の学生向けに、MOOCs 講義資�
 - INIAD API（OpenAI 互換）を利用したチャット
 - MCP 経由での MOOCs 講義資料検索・参照
 - 参照元（Citation）の表示
-- 設定画面（APIキー・モデル・MOOCs 認証情報）
+- 設定画面（APIキー・MOOCs 認証情報）。モデルは `gpt-6-luna` に固定
 - フォールバック（MCP 未接続時もプレーン会話可能）
 - Web 検索（DuckDuckGo Instant Answer API）
 
@@ -20,7 +20,7 @@ INIAD（東洋大学 情報連携学部）の学生向けに、MOOCs 講義資�
 | OS      | Windows / macOS / Linux |
 
 Electron のバイナリは `npm install` では取得されず、初回の `npm start` などで自動的にダウンロードされます。このダウンロードには Node.js 22.12 以上が必要です。
-`npm run package` は実行中の Node.js を配布物へ同梱するので、配布物も 22.12 以上の Node.js で作成してください。
+`npm run package` は実行中の Node.js を配布物へ同梱するので、配布物も 22.12 以上の Node.js で作成してください。`npm start` も同じ MCP ランタイムを作るので、22.12 未満の Node.js では `npm start` と `npm run package` のどちらもエラーで止まります。`npm run verify:mcp:packaged` も同梱された Node.js のバージョンを検査します。
 
 ## クイックスタート
 

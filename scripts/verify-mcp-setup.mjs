@@ -1,4 +1,5 @@
 /** Verify the exact MCP runtime used by development or a packaged application. */
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -9,9 +10,8 @@ import { fileURLToPath } from "node:url";
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, "..");
 const sourceRequire = createRequire(import.meta.url);
-const { computeRuntimeTreeHash } = sourceRequire(
-  path.join(scriptDirectory, "copy-mcp-runtime.cjs")
-);
+const { MIN_MCP_RUNTIME_NODE_VERSION, computeRuntimeTreeHash, isSupportedMcpRuntimeNodeVersion } =
+  sourceRequire(path.join(scriptDirectory, "copy-mcp-runtime.cjs"));
 const { extractFile: extractAsarFile } = sourceRequire("@electron/asar");
 const usePackagedRuntime = process.argv.includes("--packaged");
 const expectedTools = [
@@ -154,6 +154,30 @@ try {
   console.log("=".repeat(60));
   console.log(`Results: ${passed} passed, ${failed} failed\n`);
   process.exit(1);
+}
+
+if (usePackagedRuntime) {
+  try {
+    const bundledNodeVersion = execFileSync(runtime.nodeExecutable, ["--version"], {
+      encoding: "utf8",
+      timeout: 10_000,
+      windowsHide: true,
+    }).trim();
+    if (isSupportedMcpRuntimeNodeVersion(bundledNodeVersion)) {
+      result(
+        "Node",
+        `bundled Node.js ${bundledNodeVersion} meets >=${MIN_MCP_RUNTIME_NODE_VERSION}`
+      );
+    } else {
+      result(
+        "Node",
+        `bundled Node.js ${bundledNodeVersion} is older than ${MIN_MCP_RUNTIME_NODE_VERSION}`,
+        "fail"
+      );
+    }
+  } catch (error) {
+    result("Node", error instanceof Error ? error.message : String(error), "fail");
+  }
 }
 
 const { Client } = runtime.moduleRequire("@modelcontextprotocol/sdk/client/index.js");
