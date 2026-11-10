@@ -15,6 +15,14 @@ function createMcpMock(overrides: Partial<McpClient> = {}): McpClient {
         },
       ],
     }),
+    ensureMoocsLogin: vi.fn().mockResolvedValue({
+      content: [
+        {
+          type: "text",
+          text: '[{"title":"Python基礎","url":"https://moocs.iniad.org/courses/python"}]',
+        },
+      ],
+    }),
     navigateTo: vi.fn().mockResolvedValue(undefined),
     expandSlideTab: vi.fn().mockResolvedValue(undefined),
     extractGoogleSlideText: vi.fn().mockResolvedValue({ content: [] }),
@@ -48,7 +56,7 @@ describe("executeAgentTool", () => {
     expect(result.content).toContain("not connected");
   });
 
-  it("executes moocs_login and extracts citations", async () => {
+  it("executes moocs_login with the remembered login and extracts citations", async () => {
     const mcpClient = createMcpMock();
     const result = await executeAgentTool("moocs_login", "{}", {
       mcpClient,
@@ -56,9 +64,36 @@ describe("executeAgentTool", () => {
       mcpConnected: true,
     });
 
-    expect(mcpClient.loginToMoocs).toHaveBeenCalled();
+    expect(mcpClient.ensureMoocsLogin).toHaveBeenCalled();
+    expect(mcpClient.loginToMoocs).not.toHaveBeenCalled();
     expect(result.content).toContain("Python基礎");
     expect(result.citations.some((c) => c.url.includes("moocs.iniad.org"))).toBe(true);
+  });
+
+  it("logs in for real when moocs_login is called again in the same chat", async () => {
+    const mcpClient = createMcpMock();
+    const moocsLoginState = { called: false };
+    const ctx = { mcpClient, webClient, mcpConnected: true, moocsLoginState };
+
+    await executeAgentTool("moocs_login", "{}", ctx);
+    expect(mcpClient.ensureMoocsLogin).toHaveBeenCalledTimes(1);
+    expect(mcpClient.loginToMoocs).not.toHaveBeenCalled();
+
+    // 2 回目はセッション切れを疑っての呼び出しなので、覚えている結果を使わない。
+    await executeAgentTool("moocs_login", "{}", ctx);
+    expect(mcpClient.ensureMoocsLogin).toHaveBeenCalledTimes(1);
+    expect(mcpClient.loginToMoocs).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs in for real when moocs_login comes after another MOOCs tool in the same chat", async () => {
+    const mcpClient = createMcpMock();
+    const ctx = { mcpClient, webClient, mcpConnected: true, moocsLoginState: { called: false } };
+
+    await executeAgentTool("moocs_list_courses", "{}", ctx);
+    await executeAgentTool("moocs_login", "{}", ctx);
+
+    expect(mcpClient.ensureMoocsLogin).not.toHaveBeenCalled();
+    expect(mcpClient.loginToMoocs).toHaveBeenCalledTimes(1);
   });
 
   it("rejects non-moocs URLs for moocs_navigate", async () => {
@@ -148,6 +183,7 @@ describe("executeAgentTool", () => {
     expect(read.content).toContain("accepts only url");
     expect(search.content).toContain("non-empty string");
     expect(mcpClient.loginToMoocs).not.toHaveBeenCalled();
+    expect(mcpClient.ensureMoocsLogin).not.toHaveBeenCalled();
     expect(mcpClient.navigateTo).not.toHaveBeenCalled();
     expect(mcpClient.expandSlideTab).not.toHaveBeenCalled();
     expect(mcpClient.extractGoogleSlideText).not.toHaveBeenCalled();

@@ -17,6 +17,13 @@ const CONNECT_TIMEOUT_MS = 30_000;
 const PING_TIMEOUT_MS = 5_000;
 const TOOL_LIST_TIMEOUT_MS = 5_000;
 const LOGIN_TOOL_TIMEOUT_MS = 90_000;
+/**
+ * ログインに成功してから、ログインを省略してよい時間。
+ * MOOCs 側でセッションが切れていても、この時間が過ぎれば次の moocs_login で入り直す。
+ */
+const MOOCS_SESSION_REUSE_MS = 20 * 60_000;
+/** 裏のログインが失敗したあと、次に裏で試すまでの間隔。 */
+const BACKGROUND_LOGIN_RETRY_MS = 2 * 60_000;
 const MAX_TOOL_LIST_PAGES = 10;
 const MAX_MOOCS_URL_CHARS = 2_048;
 const MCP_RUNTIME_MANIFEST = "runtime.json";
@@ -404,6 +411,17 @@ export class McpClient {
   private connectAbortController: AbortController | null = null;
   private browserProfileDirectory: string | null = null;
   private readonly connectionIssueListeners = new Set<(error: McpClientError) => void>();
+  /** 子プロセスを作り直すたびに増やす。古い接続で終わったログインを新しい接続に持ち込まない。 */
+  private connectionGeneration = 0;
+  /**
+   * 進行中のログイン。ブラウザのタブは 1 つなので、ログインは同時に 1 回だけにする。
+   * background は、質問と関係なく裏で始めたログインか（失敗しても状態を変えない）。
+   */
+  private loginInFlight: { promise: Promise<unknown>; background: boolean } | null = null;
+  /** この接続で成功したログインの結果（コース一覧）。 */
+  private moocsSession: { result: unknown; loggedInAt: number } | null = null;
+  /** 裏のログインが最後に失敗した時刻。失敗が続くときに、質問のたびに試さないため。 */
+  private backgroundLoginFailedAt: number | null = null;
 
   getStatus(): McpStatus {
     return this.status;
@@ -586,6 +604,29 @@ export class McpClient {
     timeoutMs = TOOL_TIMEOUT_MS,
     signal?: AbortSignal
   ): Promise<unknown> {
+    // 裏で進むログインと同じタブを同時に操作しないよう、終わるまで待つ。
+    // ログインの成否はここでは問わない（失敗なら状態の更新は callToolUnlocked 側で済んでいる）。
+    const pendingLogin = this.loginInFlight;
+    if (pendingLogin) {
+      await raceWithSignal(
+        pendingLogin.promise.catch(() => undefined),
+        signal
+      );
+    }
+    return this.callToolUnlocked(toolName, args, timeoutMs, signal);
+  }
+
+  /**
+   * @param softFailure true のとき、失敗しても接続の状態を変えず、片付けや通知もしない。
+   *   質問と関係なく裏で行うログイン用。本当の失敗は、利用者が操作したときの呼び出しで扱う。
+   */
+  private async callToolUnlocked(
+    toolName: string,
+    args?: Record<string, unknown>,
+    timeoutMs = TOOL_TIMEOUT_MS,
+    signal?: AbortSignal,
+    softFailure = false
+  ): Promise<unknown> {
     if (!this.client || this.status !== "connected") {
       throw new McpClientError(
         "MCP_CONNECTION_FAILED",
@@ -599,6 +640,7 @@ export class McpClient {
 
     const validated = validateMcpToolCall(toolName, args);
     const boundedTimeout = normalizeToolTimeout(timeoutMs);
+    const generation = this.connectionGeneration;
 
     try {
       const requestOptions = {
@@ -628,6 +670,9 @@ export class McpClient {
       if (signal?.aborted || isAbortError(error)) throw cancelledError();
 
       const classified = this.classifyError(error);
+      // 切断や再接続のあとで失敗した古い呼び出し（裏のログインなど）は、新しい接続の
+      // 状態を書き換えたり片付けたりしない。
+      if (softFailure || generation !== this.connectionGeneration) throw classified;
       if (
         classified.retryable ||
         classified.kind === "authentication" ||
@@ -641,13 +686,117 @@ export class McpClient {
     }
   }
 
+  /**
+   * MOOCs に実際にログインし、結果（コース一覧）を返す。
+   *
+   * 同時に呼ばれた場合は、進行中のログインの結果を共有する。ログイン自体は呼び出し元の
+   * signal では止めない（チャットを取り消しても、終わったログインは次の質問で使える）。
+   * 取り消された呼び出し元だけが、待つのをやめる。
+   */
   async loginToMoocs(signal?: AbortSignal): Promise<unknown> {
-    return this.callToolSafe(
+    if (signal?.aborted) throw cancelledError();
+    const inFlight = this.loginInFlight;
+    if (inFlight?.background) {
+      // 裏のログインに相乗りする。裏のログインは失敗しても状態を変えないので、
+      // 失敗したらこの呼び出しでやり直し、認証エラーなどを画面に届ける。
+      try {
+        return await raceWithSignal(inFlight.promise, signal);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+      }
+      const next = this.loginInFlight;
+      return raceWithSignal(
+        next && !next.background ? next.promise : this.startLogin(false),
+        signal
+      );
+    }
+    return raceWithSignal(inFlight ? inFlight.promise : this.startLogin(false), signal);
+  }
+
+  /**
+   * ログイン済みならその結果を返し、まだなら（または時間が経っていれば）ログインする。
+   * 2 問目以降の質問で、毎回ログインし直す時間を省く。
+   */
+  async ensureMoocsLogin(signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) throw cancelledError();
+    const remembered = this.rememberedLogin();
+    if (remembered !== undefined) return remembered;
+    return this.loginToMoocs(signal);
+  }
+
+  /**
+   * 質問を待たずに、裏で MOOCs へログインしておく。例外は投げない。
+   *
+   * 失敗しても接続の状態は変えない（MOOCs を使わない質問で接続を切ったり、遅い SSO を
+   * パスワード違いと表示したりしないため）。失敗した直後は、しばらく試さない。
+   * ログイン済み（または覚えている）なら true。
+   */
+  async prewarmMoocsLogin(): Promise<boolean> {
+    if (this.status !== "connected") return false;
+    if (this.rememberedLogin() !== undefined) return true;
+    if (
+      this.backgroundLoginFailedAt !== null &&
+      Date.now() - this.backgroundLoginFailedAt < BACKGROUND_LOGIN_RETRY_MS
+    ) {
+      return false;
+    }
+    try {
+      const result = await (this.loginInFlight?.promise ?? this.startLogin(true));
+      return this.parseToolResult<CourseSummary>(result).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private rememberedLogin(): unknown {
+    const session = this.moocsSession;
+    if (
+      session &&
+      this.status === "connected" &&
+      Date.now() - session.loggedInAt < MOOCS_SESSION_REUSE_MS
+    ) {
+      return session.result;
+    }
+    return undefined;
+  }
+
+  private startLogin(background: boolean): Promise<unknown> {
+    const generation = this.connectionGeneration;
+    const isCurrentConnection = () => generation === this.connectionGeneration;
+    const operation = this.callToolUnlocked(
       "loginToIniadMoocsWithIniadAccount",
       undefined,
       LOGIN_TOOL_TIMEOUT_MS,
-      signal
+      undefined,
+      background
+    ).then(
+      (result) => {
+        if (isCurrentConnection()) {
+          // 最新のログインの結果で、覚えておく状態を決める。コースが 0 件のときは、
+          // ログイン画面を抜けられなかった可能性があるので、前の成功も含めて忘れる。
+          const loggedIn =
+            this.status === "connected" && this.parseToolResult<CourseSummary>(result).length > 0;
+          this.moocsSession = loggedIn ? { result, loggedInAt: Date.now() } : null;
+          if (loggedIn) this.backgroundLoginFailedAt = null;
+          else if (background) this.backgroundLoginFailedAt = Date.now();
+        }
+        return result;
+      },
+      (error: unknown) => {
+        if (isCurrentConnection()) {
+          this.moocsSession = null;
+          if (background) this.backgroundLoginFailedAt = Date.now();
+        }
+        throw error;
+      }
     );
+    const entry = { promise: operation, background };
+    this.loginInFlight = entry;
+    const clear = () => {
+      if (this.loginInFlight === entry) this.loginInFlight = null;
+    };
+    void operation.then(clear, clear);
+    return operation;
   }
 
   /**
@@ -1019,6 +1168,12 @@ export class McpClient {
     this.client = null;
     this.transport = null;
     this.browserProfileDirectory = null;
+    // ブラウザごと消えるので、ログイン状態も捨てる。進行中のログインも古い接続のものなので、
+    // 次の接続のログインがそれを共有しないようにする（古い方は client を閉じると失敗する）。
+    this.connectionGeneration += 1;
+    this.moocsSession = null;
+    this.loginInFlight = null;
+    this.backgroundLoginFailedAt = null;
 
     try {
       await client?.close();
@@ -1058,6 +1213,26 @@ async function removeMcpBrowserProfile(profileDirectory: string | null): Promise
 function normalizeToolTimeout(timeoutMs: number): number {
   if (!Number.isFinite(timeoutMs)) return TOOL_TIMEOUT_MS;
   return Math.min(MAX_TOOL_TIMEOUT_MS, Math.max(1_000, Math.trunc(timeoutMs)));
+}
+
+/** 共有の処理は止めずに、この呼び出し元だけが signal で待つのをやめられるようにする。 */
+function raceWithSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(cancelledError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(cancelledError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
 }
 
 function isAbortError(error: unknown): boolean {
