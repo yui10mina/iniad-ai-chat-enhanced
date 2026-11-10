@@ -663,19 +663,25 @@ export class SettingsStore {
 import { safeStorage } from "electron";
 
 // 保存時: 機密情報（apiKey/moocsPassword）を1つの JSON にまとめて暗号化
+// 同期 API（isEncryptionAvailable/encryptString/decryptString）は Electron 46 で削除されるため非同期 API を使う
 const secrets = JSON.stringify({ apiKey, moocsPassword });
-if (safeStorage.isEncryptionAvailable()) {
-  const encrypted = safeStorage.encryptString(secrets);
-  fs.writeFileSync(credentialsPath, encrypted.toString("base64"));
+if (await safeStorage.isAsyncEncryptionAvailable()) {
+  const encrypted = await safeStorage.encryptStringAsync(secrets);
+  // 一時ファイルに書いてから rename で置き換える（途中で失敗しても元のファイルが残る）
+  await writeFileAtomic(credentialsPath, encrypted.toString("base64"));
 }
 
 // 読込時: 復号して JSON をパース
+// shouldReEncrypt が true でも起動時には書き直さず、次にユーザーが保存したときに新しい鍵で暗号化する
 const encrypted = Buffer.from(
-  fs.readFileSync(credentialsPath, "utf-8"),
+  await fs.readFile(credentialsPath, "utf-8"),
   "base64",
 );
-const secrets = JSON.parse(safeStorage.decryptString(encrypted));
+const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(encrypted);
+const secrets = JSON.parse(result);
 ```
+
+同期 API で保存済みの `credentials.enc`（`v10` プレフィックス）は `decryptStringAsync` でそのまま復号できる。Linux で `getSelectedStorageBackend()` が `basic_text` の場合は安全な保存先とみなさず、資格情報を保存しない。
 
 APIキーと MOOCs パスワードは `settings.json` に平文保存せず、Electron の `safeStorage` API で暗号化して `credentials.enc` に別途保存する。`settings.json` ��は機密情報以外の設定値のみを格納する。
 

@@ -1,19 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { promises as fs } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 
 // safeStorage は vi.fn() で定義し、beforeEach で実装を設定する。
-// 実際の safeStorage と同様に「isEncryptionAvailable() が false のときは
-// encryptString/decryptString が例外を投げる」挙動にして、フォールバック分岐を検証する。
+// 実際の safeStorage と同様に「暗号化が利用不可のときは
+// encryptStringAsync/decryptStringAsync が reject する」挙動にして、フォールバック分岐を検証する。
+// 同期 API（isEncryptionAvailable/encryptString/decryptString）は Electron 46 で削除されるため
+// モックに含めず、実装が誤って呼んだ場合は TypeError で失敗させる。
 vi.mock("electron", () => ({
   app: { getPath: vi.fn(() => tmpdir()) },
   safeStorage: {
-    isEncryptionAvailable: vi.fn(),
+    isAsyncEncryptionAvailable: vi.fn(),
     getSelectedStorageBackend: vi.fn(),
-    encryptString: vi.fn(),
-    decryptString: vi.fn(),
+    encryptStringAsync: vi.fn(),
+    decryptStringAsync: vi.fn(),
   },
 }));
 
@@ -34,34 +36,36 @@ describe("SettingsStore", () => {
   let store: SettingsStore;
   let tempPath: string;
   let credPath: string;
+  let testDir: string;
 
   beforeEach(async () => {
     // safeStorage モック: 可用性チェックを通過した場合のみ成功（実装の呼び分けを検証）
-    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(true);
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
     vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue("kwallet");
-    vi.mocked(safeStorage.encryptString).mockImplementation((s: string) => {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("safeStorage unavailable");
+    vi.mocked(safeStorage.encryptStringAsync).mockImplementation(async (s: string) => {
+      if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+        throw new Error("safeStorage unavailable");
+      }
       return Buffer.from(s, "utf-8");
     });
-    vi.mocked(safeStorage.decryptString).mockImplementation((b: Buffer) => {
-      if (!safeStorage.isEncryptionAvailable()) throw new Error("safeStorage unavailable");
-      return b.toString("utf-8");
+    vi.mocked(safeStorage.decryptStringAsync).mockImplementation(async (b: Buffer) => {
+      if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+        throw new Error("safeStorage unavailable");
+      }
+      return { result: b.toString("utf-8"), shouldReEncrypt: false };
     });
 
-    tempPath = join(tmpdir(), `settings-test-${randomUUID()}.json`);
-    credPath = join(dirname(tempPath), "credentials.enc");
+    // テストごとに専用のフォルダを使い、並行実行や他のテストのファイルと干渉させない。
+    testDir = await fs.mkdtemp(join(tmpdir(), "settings-test-"));
+    tempPath = join(testDir, "settings.json");
+    credPath = join(testDir, "credentials.enc");
     store = new SettingsStore();
     await store.init(tempPath);
   });
 
   afterEach(async () => {
-    for (const p of [tempPath, credPath, `${credPath}.bak`]) {
-      try {
-        await fs.unlink(p);
-      } catch {
-        // ファイルがない場合は無視
-      }
-    }
+    vi.restoreAllMocks();
+    await fs.rm(testDir, { recursive: true, force: true });
   });
 
   // ── 基本テスト（暗号化下でも契約不变） ──
@@ -69,9 +73,7 @@ describe("SettingsStore", () => {
   it("credentials.enc の保存に失敗したら settings.json を元の値へ戻す", async () => {
     await store.updateSettings({ moocsUsername: "old-user", moocsPassword: "old-pass" });
 
-    vi.mocked(safeStorage.encryptString).mockImplementationOnce(() => {
-      throw new Error("encrypt failed");
-    });
+    vi.mocked(safeStorage.encryptStringAsync).mockRejectedValueOnce(new Error("encrypt failed"));
     await expect(
       store.updateSettings({ moocsUsername: "new-user", moocsPassword: "new-pass" })
     ).rejects.toThrow("encrypt failed");
@@ -263,12 +265,10 @@ describe("SettingsStore", () => {
     expect(await exists(`${credPath}.bak`)).toBe(true);
   });
 
-  it("safeStorage.decryptString 自体が例外を投げる場合も .bak に退避し機密は空にフォールバックする", async () => {
+  it("safeStorage.decryptStringAsync 自体が reject する場合も .bak に退避し機密は空にフォールバックする", async () => {
     await store.updateSettings({ apiKey: "sk-real", moocsPassword: "secret" });
-    // decryptString が例外を投げる状況（OS 復号エラー相当）をシミュレート
-    vi.mocked(safeStorage.decryptString).mockImplementation(() => {
-      throw new Error("decrypt failed");
-    });
+    // decryptStringAsync が reject する状況（OS 復号エラー相当）をシミュレート
+    vi.mocked(safeStorage.decryptStringAsync).mockRejectedValue(new Error("decrypt failed"));
 
     const reloaded = new SettingsStore();
     await reloaded.init(tempPath);
@@ -279,7 +279,7 @@ describe("SettingsStore", () => {
   });
 
   it("safeStorage が利用不可の場合は秘密情報を平文保存しない", async () => {
-    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
 
     const fallback = new SettingsStore();
     await fallback.init(tempPath);
@@ -291,9 +291,96 @@ describe("SettingsStore", () => {
     expect(fallback.getRawSettings().moocsPassword).toBe("");
   });
 
-  it("Linux の basic_text バックエンドを安全な保存先として扱わない", () => {
+  it("Linux の basic_text バックエンドを安全な保存先として扱わない", async () => {
     vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue("basic_text");
-    expect(isSecureStorageAvailable("linux")).toBe(false);
+    await expect(isSecureStorageAvailable("linux")).resolves.toBe(false);
+    // basic_text の判定は Linux に限る
+    await expect(isSecureStorageAvailable("win32")).resolves.toBe(true);
+  });
+
+  it("Linux の basic_text では資格情報を保存しない", async () => {
+    vi.mocked(safeStorage.getSelectedStorageBackend).mockReturnValue("basic_text");
+    vi.mocked(safeStorage.encryptStringAsync).mockClear();
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await expect(store.updateSettings({ apiKey: "sk-basic-text" })).rejects.toThrow(
+        "安全な資格情報ストレージ"
+      );
+      expect(await exists(credPath)).toBe(false);
+      expect(safeStorage.encryptStringAsync).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("shouldReEncrypt でも起動時には書き直さず、次の保存で暗号化し直す", async () => {
+    await store.updateSettings({ apiKey: "sk-rotate", moocsPassword: "rotate-pass" });
+    const before = await fs.readFile(credPath, "utf-8");
+    vi.mocked(safeStorage.encryptStringAsync).mockClear();
+    vi.mocked(safeStorage.decryptStringAsync).mockImplementationOnce(async (b: Buffer) => ({
+      result: b.toString("utf-8"),
+      shouldReEncrypt: true,
+    }));
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(reloaded.getRawSettings()).toMatchObject({
+      apiKey: "sk-rotate",
+      moocsPassword: "rotate-pass",
+    });
+    // 起動時にはファイルに触れない（旧版へ戻しても同じファイルを読める）。
+    expect(safeStorage.encryptStringAsync).not.toHaveBeenCalled();
+    expect(await fs.readFile(credPath, "utf-8")).toBe(before);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
+
+    await reloaded.updateSettings({ model: "gpt-5.4-mini" });
+    expect(safeStorage.encryptStringAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("credentials.enc の書き込みが途中で失敗しても元のファイルと値が残る", async () => {
+    await store.updateSettings({
+      moocsUsername: "old-user",
+      apiKey: "sk-keep",
+      moocsPassword: "keep-pass",
+    });
+    const before = await fs.readFile(credPath, "utf-8");
+    const realWriteFile = fs.writeFile.bind(fs);
+    // ディスク不足などで、書き込み先を空にした直後に失敗する状況を再現する。
+    const writeFile = vi.spyOn(fs, "writeFile").mockImplementation((async (
+      target: Parameters<typeof fs.writeFile>[0],
+      ...rest: unknown[]
+    ) => {
+      if (String(target).includes("credentials.enc")) {
+        await realWriteFile(target, "");
+        throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+      }
+      return (realWriteFile as (...args: unknown[]) => Promise<void>)(target, ...rest);
+    }) as typeof fs.writeFile);
+
+    try {
+      await expect(
+        store.updateSettings({ moocsUsername: "new-user", moocsPassword: "new-pass" })
+      ).rejects.toThrow("ENOSPC");
+    } finally {
+      writeFile.mockRestore();
+    }
+
+    expect(await fs.readFile(credPath, "utf-8")).toBe(before);
+    const leftovers = (await fs.readdir(dirname(credPath))).filter((name) =>
+      name.startsWith(`${basename(credPath)}.`)
+    );
+    expect(leftovers).toEqual([]);
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+    expect(reloaded.getRawSettings()).toMatchObject({
+      moocsUsername: "old-user",
+      apiKey: "sk-keep",
+      moocsPassword: "keep-pass",
+    });
+    expect(await exists(`${credPath}.bak`)).toBe(false);
   });
 
   it("旧版の平文フォールバックは safeStorage で暗号化し直す", async () => {
@@ -309,10 +396,101 @@ describe("SettingsStore", () => {
     expect(stored).not.toContain("legacy-key");
   });
 
+  it("暗号化機能が一時的に使えなくても credentials.enc を退避せず、使えるようになれば読める", async () => {
+    await store.updateSettings({ apiKey: "sk-keep", moocsPassword: "keep-pass" });
+    const before = await fs.readFile(credPath, "utf-8");
+
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
+    const unavailable = new SettingsStore();
+    await unavailable.init(tempPath);
+    expect(unavailable.getRawSettings().apiKey).toBe("");
+    expect(await fs.readFile(credPath, "utf-8")).toBe(before);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
+
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
+    const available = new SettingsStore();
+    await available.init(tempPath);
+    expect(available.getRawSettings()).toMatchObject({
+      apiKey: "sk-keep",
+      moocsPassword: "keep-pass",
+    });
+  });
+
+  it("復号に失敗しても既存の .bak を上書きしない", async () => {
+    await fs.writeFile(`${credPath}.bak`, "older-backup", "utf-8");
+    await store.updateSettings({ apiKey: "sk-real", moocsPassword: "secret" });
+    await fs.writeFile(credPath, "broken-content", "utf-8");
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(await fs.readFile(`${credPath}.bak`, "utf-8")).toBe("older-backup");
+    const backups = (await fs.readdir(testDir)).filter(
+      (name) =>
+        name !== "credentials.enc.bak" &&
+        name.startsWith("credentials.enc.") &&
+        name.endsWith(".bak")
+    );
+    expect(backups).toHaveLength(1);
+    expect(await fs.readFile(join(testDir, backups[0]), "utf-8")).toBe("broken-content");
+  });
+
+  it("旧版の平文の移行で保存に失敗したら、旧ファイルを消さず次回起動で移行し直す", async () => {
+    const plaintext = JSON.stringify({ apiKey: "legacy-key", moocsPassword: "legacy-pass" });
+    const legacyContent = `plaintext:${Buffer.from(plaintext).toString("base64")}`;
+    await fs.writeFile(credPath, legacyContent, "utf-8");
+    vi.mocked(safeStorage.encryptStringAsync).mockRejectedValueOnce(new Error("encrypt failed"));
+
+    const failed = new SettingsStore();
+    await failed.init(tempPath);
+    expect(await fs.readFile(credPath, "utf-8")).toBe(legacyContent);
+    expect(await exists(`${credPath}.bak`)).toBe(false);
+
+    const retried = new SettingsStore();
+    await retried.init(tempPath);
+    expect(retried.getRawSettings().apiKey).toBe("legacy-key");
+    expect(await fs.readFile(credPath, "utf-8")).not.toContain("plaintext:");
+  });
+
+  it("Windows で対象ファイルが一時的に開かれていても、置き換えを再試行して保存する", async () => {
+    const realRename = fs.rename.bind(fs);
+    let failures = 0;
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (String(to).endsWith("credentials.enc") && failures < 2) {
+        failures++;
+        throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+      }
+      return realRename(from, to);
+    });
+
+    await store.updateSettings({ apiKey: "sk-retry", moocsPassword: "retry-pass" });
+    vi.restoreAllMocks();
+
+    expect(failures).toBe(2);
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+    expect(reloaded.getRawSettings().apiKey).toBe("sk-retry");
+  });
+
+  it("起動時に古い一時ファイルだけを消す", async () => {
+    const stale = `${credPath}.1234.${randomUUID()}.tmp`;
+    const fresh = `${credPath}.5678.${randomUUID()}.tmp`;
+    await fs.writeFile(stale, "stale", "utf-8");
+    await fs.writeFile(fresh, "fresh", "utf-8");
+    const old = new Date(Date.now() - 5 * 60_000);
+    await fs.utimes(stale, old, old);
+
+    const reloaded = new SettingsStore();
+    await reloaded.init(tempPath);
+
+    expect(await exists(stale)).toBe(false);
+    expect(await exists(fresh)).toBe(true);
+  });
+
   it("暗号化できない環境では旧版の平文資格情報を残さない", async () => {
     const plaintext = JSON.stringify({ apiKey: "legacy-key", moocsPassword: "legacy-pass" });
     await fs.writeFile(credPath, `plaintext:${Buffer.from(plaintext).toString("base64")}`, "utf-8");
-    vi.mocked(safeStorage.isEncryptionAvailable).mockReturnValue(false);
+    vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
 
     const migrated = new SettingsStore();
     await migrated.init(tempPath);
