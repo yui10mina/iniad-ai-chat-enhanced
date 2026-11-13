@@ -96,6 +96,8 @@ describe("ChatAgent", () => {
     expect(firstBody.tool_choice).toBe("auto");
     // gpt-6-luna はツールと推論を同時に使えず、temperature も既定値しか受け付けない。
     expect(firstBody.reasoning_effort).toBe("none");
+    // 回答の長さの上限。手元の確認で小さくした値がそのまま残るのを防ぐ。
+    expect(firstBody.max_completion_tokens).toBe(2048);
     expect(firstBody).not.toHaveProperty("temperature");
     const secondBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
     expect(

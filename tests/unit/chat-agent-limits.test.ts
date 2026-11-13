@@ -1,7 +1,7 @@
 /**
  * エージェントのループ上限の「今の動き」を固定するテスト。
  * 本番コードは変えず、API に送った body と chat の戻り値だけを見る。
- * finish_reason=length をふつうの回答として返すのは今の動きで、計画の PR8 で反転する。
+ * finish_reason は PR8 で判定するようになった。途中で終わった回答は本文を変えずに completion で知らせる。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatAgent } from "../../src/main/services/chat-agent";
@@ -216,21 +216,138 @@ describe("ChatAgent loop limits (current behaviour)", () => {
   });
 
   describe("finish_reason", () => {
-    it("returns a reply cut off by finish_reason=length as a normal answer (reversed in PR8)", async () => {
-      installFakeLlm(() => ({ content: "途中で切れた回答", finishReason: "length" }));
-      const agent = new ChatAgent(connectedMcp(), webClient);
+    it.each<{ finishReason: string | null; name: string }>([
+      { finishReason: "stop", name: "stop" },
+      { finishReason: null, name: "missing" },
+      { finishReason: "something_new", name: "an unknown value" },
+    ])(
+      "returns a complete answer without a completion field when finish_reason is $name",
+      async ({ finishReason }) => {
+        installFakeLlm(() => ({ content: "回答です。", finishReason }));
+        const agent = new ChatAgent(connectedMcp(), webClient);
 
-      const result = await agent.chat("質問", settings);
+        const result = await agent.chat("質問", settings);
 
-      expect(result.content).toBe("途中で切れた回答");
-      expect(Object.keys(result).sort()).toEqual(["citations", "content", "latencyMs"]);
+        expect(result.content).toBe("回答です。");
+        expect(Object.keys(result).sort()).toEqual(["citations", "content", "latencyMs"]);
+      }
+    );
+
+    it.each<{ finishReason: string; completion: string }>([
+      { finishReason: "length", completion: "truncated" },
+      { finishReason: "content_filter", completion: "filtered" },
+    ])(
+      "returns the text unchanged and marks it $completion when finish_reason is $finishReason",
+      async ({ finishReason, completion }) => {
+        installFakeLlm(() => ({ content: "途中で終わった回答", finishReason }));
+        const agent = new ChatAgent(connectedMcp(), webClient);
+
+        const result = await agent.chat("質問", settings);
+
+        expect(result.content).toBe("途中で終わった回答");
+        expect(result.completion).toBe(completion);
+        expect(Object.keys(result).sort()).toEqual([
+          "citations",
+          "completion",
+          "content",
+          "latencyMs",
+        ]);
+      }
+    );
+
+    it.each<{ finishReason: string | null; message: string }>([
+      {
+        finishReason: "length",
+        message: "回答が出力の上限に達し、本文が返りませんでした。質問を分けて再度お試しください。",
+      },
+      {
+        finishReason: "content_filter",
+        message: "回答がコンテンツフィルタで止められ、本文が返りませんでした。",
+      },
+      { finishReason: "stop", message: "API が空の回答を返しました" },
+      { finishReason: null, message: "API が空の回答を返しました" },
+    ])(
+      "rejects an empty reply with finish_reason $finishReason",
+      async ({ finishReason, message }) => {
+        installFakeLlm(() => ({ content: "  ", finishReason }));
+        const agent = new ChatAgent(connectedMcp(), webClient);
+
+        await expect(agent.chat("質問", settings)).rejects.toThrow(new Error(message));
+      }
+    );
+
+    // 強制された最終回答でも、印を付けるかどうかは finish_reason だけで決まる。
+    it.each<{ finishReason: string; keys: string[] }>([
+      { finishReason: "length", keys: ["citations", "completion", "content", "latencyMs"] },
+      { finishReason: "stop", keys: ["citations", "content", "latencyMs"] },
+    ])(
+      "marks the forced final answer only by finish_reason ($finishReason)",
+      async ({ finishReason, keys }) => {
+        // 8 回ツールを呼び続け、9 回目（ツールなし）で回答する。
+        const llm = installFakeLlm((index) =>
+          index < 8
+            ? { toolCalls: [navigateCall(`call_${index}`, index)] }
+            : { content: "回答です。", finishReason }
+        );
+        const agent = new ChatAgent(connectedMcp(), webClient);
+
+        const result = await agent.chat("質問", settings);
+
+        expect(llm.requests).toHaveLength(9);
+        expect(llm.requests[8]).not.toHaveProperty("tools");
+        expect(Object.keys(result).sort()).toEqual(keys);
+      }
+    );
+
+    // 切れた tool_calls の扱いは今の動きのまま。引数ごとに executor が判定する。
+    it("does not run a tool call whose JSON arguments were cut off, but runs the complete ones", async () => {
+      const llm = installFakeLlm((index) =>
+        index === 0
+          ? {
+              finishReason: "length",
+              toolCalls: [
+                navigateCall("complete", 1),
+                {
+                  id: "cut",
+                  name: "moocs_navigate",
+                  arguments: '{"url":"https://moocs.iniad.org/cour',
+                },
+              ],
+            }
+          : { content: "回答です。" }
+      );
+      const mcp = connectedMcp();
+      const agent = new ChatAgent(mcp, webClient);
+
+      await expect(agent.chat("質問", settings)).resolves.toMatchObject({ content: "回答です。" });
+
+      expect(mcp.navigateTo).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(mcp.navigateTo).mock.calls[0]?.[0]).toBe(
+        "https://moocs.iniad.org/courses/2026/TEST/1"
+      );
+      const results = toolMessages(llm.requests[1]);
+      expect(results.map((message) => message.tool_call_id)).toEqual(["complete", "cut"]);
+      expect(results[1].content).toContain("Error: tool arguments must be valid JSON");
     });
 
-    it("rejects an empty reply cut off by finish_reason=length as an empty answer", async () => {
-      installFakeLlm(() => ({ content: "", finishReason: "length" }));
-      const agent = new ChatAgent(connectedMcp(), webClient);
+    it("runs a tool call cut off with empty arguments as if it had none", async () => {
+      const callToolSafe = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "コース一覧" }],
+      });
+      installFakeLlm((index) =>
+        index === 0
+          ? {
+              finishReason: "length",
+              toolCalls: [{ id: "empty", name: "moocs_list_courses", arguments: "" }],
+            }
+          : { content: "回答です。" }
+      );
+      const mcp = { ...connectedMcp(), callToolSafe } as unknown as McpClient;
+      const agent = new ChatAgent(mcp, webClient);
 
-      await expect(agent.chat("質問", settings)).rejects.toThrow("API が空の回答を返しました");
+      await agent.chat("質問", settings);
+
+      expect(callToolSafe).toHaveBeenCalledWith("listCourses", undefined, undefined, undefined);
     });
   });
 });
