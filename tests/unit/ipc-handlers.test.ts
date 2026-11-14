@@ -29,6 +29,7 @@ const fakes = vi.hoisted(() => ({
   testMcpCredentials: vi.fn(),
   store: undefined as unknown,
   windows: [] as unknown[],
+  registeredSink: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
@@ -186,7 +187,11 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
   ipc = await import("../../src/main/ipc-handlers");
-  ipc.registerIpcHandlers({ isTrustedSender: (id) => id === TRUSTED_ID });
+  fakes.registeredSink.mockReset();
+  ipc.registerIpcHandlers({
+    isTrustedSender: (id) => id === TRUSTED_ID,
+    traceSinks: [fakes.registeredSink],
+  });
 });
 
 describe("IPC handlers (current behaviour)", () => {
@@ -470,6 +475,22 @@ describe("IPC handlers (current behaviour)", () => {
       await invokeAs(event, "chat:send", "質問");
 
       expect(sender.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("also gives the events to the sinks passed at registration, and only those", async () => {
+      const lateSink = vi.fn();
+      ipc.registerIpcHandlers({ isTrustedSender: () => true, traceSinks: [lateSink] });
+      const { event } = senderEvent();
+      fakes.chat.mockImplementation(async (...args: Parameters<ChatFn>) => {
+        for (const sink of args[4].traceSinks ?? []) sink(LLM_START);
+        return ANSWER;
+      });
+
+      await invokeAs(event, "chat:send", "質問");
+
+      expect(fakes.registeredSink.mock.calls).toEqual([[LLM_START]]);
+      // 2 回目の登録は無視されるので、そのとき渡した送り先は使われない。
+      expect(lateSink).not.toHaveBeenCalled();
     });
 
     it("does not carry one question's progress target over to the next question", async () => {

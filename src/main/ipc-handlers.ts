@@ -14,7 +14,7 @@ import {
 } from "./ipc-validation";
 import { createProgressSink } from "./chat-progress";
 import { ChatRunner, waitAtMost } from "./chat-runner";
-import { consoleTraceSink } from "./services/agent-trace";
+import { consoleTraceSink, type AgentTraceSink } from "./services/agent-trace";
 import { createAppServices } from "./services/app-services";
 import {
   AutomaticReconnectPolicy,
@@ -30,6 +30,8 @@ import { settingsStore } from "./services/settings-store";
 
 export interface RegisterIpcHandlersOptions {
   isTrustedSender: (webContentsId: number) => boolean;
+  /** 実行の記録の送り先に足すもの（ファイルへの保存など）。本文や検索語は渡らない。 */
+  traceSinks?: readonly AgentTraceSink[];
 }
 
 type SecureHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown | Promise<unknown>;
@@ -49,11 +51,13 @@ let shutdownPromise: Promise<void> | null = null;
 let mcpConnectionState: McpConnectionState = { status: "disconnected" };
 const automaticReconnectPolicy = new AutomaticReconnectPolicy();
 let automaticReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+// 登録時に渡された送り先を足せるよう、配列を使い回す。ChatRunner は実行のたびに読む。
+const traceSinks: AgentTraceSink[] = [consoleTraceSink];
 const chatRunner = new ChatRunner({
   store,
   chatAgent,
   getSettings: () => settingsStore.getRawSettings(),
-  traceSinks: [consoleTraceSink],
+  traceSinks,
   prepareMcp: prepareMcpForChat,
 });
 
@@ -108,6 +112,7 @@ function assertTrustedSender(event: IpcMainInvokeEvent, options: RegisterIpcHand
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
   if (handlersRegistered) return;
   handlersRegistered = true;
+  traceSinks.push(...(options.traceSinks ?? []));
 
   removeConnectionIssueListener = mcpClient.onConnectionIssue((error) => {
     handleMcpConnectionIssue(error);
