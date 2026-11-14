@@ -1,6 +1,8 @@
 import { app, BrowserWindow, session, type WebContents } from "electron";
+import path from "path";
 import { registerIpcHandlers, shutdownIpcServices } from "./ipc-handlers";
 import { settingsStore } from "./services/settings-store";
+import { TraceWriter } from "./services/trace-writer";
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (require("electron-squirrel-startup")) {
@@ -14,6 +16,8 @@ declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 const trustedWebContentsIds = new Set<number>();
 let shutdownStarted = false;
 let shutdownComplete = false;
+// 実行の記録を userData/traces に保存する。本文や検索語は記録に含まれない。
+let traceWriter: TraceWriter | null = null;
 
 const isAllowedSessionPermission = (webContents: WebContents | null, permission: string): boolean =>
   webContents !== null &&
@@ -71,8 +75,10 @@ app.whenReady().then(async () => {
     console.error("[SettingsStore] Initialization failed; using in-memory defaults");
     settingsStore.useDefaultsInMemory();
   }
+  traceWriter = new TraceWriter({ directory: path.join(app.getPath("userData"), "traces") });
   registerIpcHandlers({
     isTrustedSender: (webContentsId) => trustedWebContentsIds.has(webContentsId),
+    traceSinks: [traceWriter.sink],
   });
   createWindow();
 
@@ -99,6 +105,8 @@ app.on("before-quit", (event) => {
     .catch(() => {
       console.warn("[App] MCP shutdown did not complete cleanly");
     })
+    // キャンセルされた実行の最後の行まで書き終えてから終了する。
+    .then(() => traceWriter?.flush())
     .finally(() => {
       shutdownComplete = true;
       app.quit();
