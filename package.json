@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.config.mts tests/integration",
+    "eval:live": "vitest run --config vitest.live.config.mts",
     "verify:mcp": "node scripts/verify-mcp-setup.mjs",
     "verify:mcp:packaged": "node scripts/verify-mcp-setup.mjs --packaged",
     "postinstall": "patch-package",
