@@ -642,6 +642,16 @@ body {
   border-color: var(--ai-name-color);
 }
 
+/* 途中で終わった回答の印 */
+.message-completion-note {
+  margin: 0.75rem 0 0;
+  padding: 0.4rem 0.65rem;
+  border-left: 3px solid var(--primary);
+  background-color: rgba(137, 180, 250, 0.08);
+  color: var(--primary);
+  font-size: 0.82rem;
+}
+
 /* Citations */
 .citations-container {
   margin-top: 1rem;

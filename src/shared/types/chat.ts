@@ -3,6 +3,13 @@
  * Main ↔ Renderer 間で共有されるチャットデータの型
  */
 
+/**
+ * 回答が最後まで書かれずに終わった理由。
+ * truncated: 出力の上限で切れた（finish_reason=length）
+ * filtered: コンテンツフィルタで止められた（finish_reason=content_filter）
+ */
+export type AnswerCompletion = "truncated" | "filtered";
+
 /** 会話の1ターン（ユーザーまたはAIの発言） */
 export interface ChatTurn {
   /** 一意なメッセージID */
@@ -13,6 +20,8 @@ export interface ChatTurn {
   content: string;
   /** AI回答の場合、参照元の引用情報 */
   citations?: Citation[];
+  /** AI回答が最後まで書かれずに終わった理由。最後まで書かれた回答では付かない。 */
+  completion?: AnswerCompletion;
   /** タイムスタンプ（ISO 8601 文字列） */
   timestamp: string;
 }
@@ -48,12 +57,8 @@ export interface ChatResponse {
   citations: Citation[];
   /** レスポンスのレイテンシ（ミリ秒） */
   latencyMs?: number;
-  /**
-   * 回答が最後まで書かれずに終わった理由。最後まで書かれた回答では付かない。
-   * truncated: 出力の上限で切れた（finish_reason=length）
-   * filtered: コンテンツフィルタで止められた（finish_reason=content_filter）
-   */
-  completion?: "truncated" | "filtered";
+  /** 回答が最後まで書かれずに終わった理由。最後まで書かれた回答では付かない。 */
+  completion?: AnswerCompletion;
 }
 
 /** OpenAI 互換のツール定義 */

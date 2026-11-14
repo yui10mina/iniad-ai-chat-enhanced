@@ -3,6 +3,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatTurn } from "../../shared/types/chat";
 import { CitationPanel } from "./CitationPanel";
+import { completionLabel } from "../completion-notice";
 
 interface MessageBubbleProps {
   turn: ChatTurn;
@@ -64,6 +65,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ turn }) => {
     }
   }, [turn.content]);
 
+  const incompleteLabel = isUser ? null : completionLabel(turn.completion);
+
   return (
     <div className={`message-bubble-wrapper ${isUser ? "user" : "assistant"}`}>
       <div className="message-avatar">
@@ -115,6 +118,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ turn }) => {
                 {turn.content}
               </ReactMarkdown>
             </div>
+          )}
+
+          {incompleteLabel && (
+            <p className="message-completion-note" role="note">
+              {incompleteLabel}
+            </p>
           )}
 
           {!isUser && <CitationPanel citations={turn.citations || []} />}

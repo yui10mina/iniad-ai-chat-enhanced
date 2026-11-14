@@ -2,6 +2,7 @@
 import { BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
 import { AppError, toSerializableError } from "../shared/types/errors";
 import type { ChatResponse, ChatTurn } from "../shared/types/chat";
+import { toAssistantTurn } from "../shared/utils/assistant-turn";
 import type {
   ConnectionTestResult,
   McpConnectionState,
@@ -263,13 +264,11 @@ async function runChat(userText: string, controller: AbortController): Promise<C
     store.markMaterialsReferenced(priorMaterials.map((material) => material.id));
     store.addMaterials(retrievedMaterials);
 
-    const assistantMessage: ChatTurn = {
-      id: `msg_${Date.now()}_ai`,
-      role: "assistant",
-      content: response.content,
-      citations: response.citations,
-      timestamp: new Date().toISOString(),
-    };
+    const assistantMessage = toAssistantTurn(
+      response,
+      `msg_${Date.now()}_ai`,
+      new Date().toISOString()
+    );
     // 未確定ターンを先に履歴へ入れない。失敗時のrollbackで上限履歴を失わないため、
     // user/assistant は回答確定後にまとめてcommitする。
     store.addMessage(userMessage);

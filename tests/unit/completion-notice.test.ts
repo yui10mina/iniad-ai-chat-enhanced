@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { completionNoticeText } from "../../src/renderer/completion-notice";
+import { completionLabel, completionNoticeText } from "../../src/renderer/completion-notice";
+
+describe("completionLabel", () => {
+  it("returns no label for a complete answer", () => {
+    expect(completionLabel(undefined)).toBeNull();
+  });
+
+  it("labels a truncated answer", () => {
+    expect(completionLabel("truncated")).toBe("出力の上限に達したため、この回答は途中までです");
+  });
+
+  it("labels a filtered answer", () => {
+    expect(completionLabel("filtered")).toBe(
+      "コンテンツフィルタで止められたため、この回答は途中までです"
+    );
+  });
+});
 
 describe("completionNoticeText", () => {
   it("returns no notice for a complete answer", () => {
