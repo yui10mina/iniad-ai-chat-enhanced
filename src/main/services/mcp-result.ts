@@ -43,6 +43,8 @@ export type ToolFailureCode =
   | "tool_limit_reached"
   /** 資料や MCP の出力を読んだあとの web_search */
   | "web_search_blocked"
+  /** 同じ呼び出しを、同じ状況で繰り返しすぎた */
+  | "repeated_call"
   | "mcp_not_connected"
   | "mcp_connection_lost"
   /** MCP がエラーとして返した結果 */

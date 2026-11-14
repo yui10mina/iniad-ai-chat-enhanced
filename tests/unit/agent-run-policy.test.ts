@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentRunPolicy,
   MAX_AGENT_TOOL_CALLS,
+  MAX_IDENTICAL_TOOL_CALLS,
   MAX_ITERATIONS,
 } from "../../src/main/services/agent-run-policy";
 
@@ -180,6 +181,171 @@ describe("AgentRunPolicy", () => {
         allowed: false,
         content: LIMIT_MESSAGE,
       });
+    });
+  });
+
+  describe("the same call repeated", () => {
+    const SLIDE_A = "https://moocs.iniad.org/courses/2099/TEST101/01/01";
+    const SLIDE_B = "https://moocs.iniad.org/courses/2099/TEST101/01/02";
+    const read = (url: string) => JSON.stringify({ url });
+    const REFUSED = {
+      allowed: false,
+      content:
+        "Error: this exact tool call was already made twice with nothing changed in between. " +
+        "Its result is in an earlier tool result. Use that result, or answer with what you have.",
+      outcome: { ok: false, code: "repeated_call" },
+    };
+    const ALLOWED = { allowed: true };
+
+    it("allows a call twice and refuses the third", () => {
+      expect(MAX_IDENTICAL_TOOL_CALLS).toBe(2);
+      const policy = freshPolicy();
+
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(REFUSED);
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(REFUSED);
+    });
+
+    it("does not count a refused repeat against the tool budget", () => {
+      const policy = freshPolicy();
+      for (let i = 0; i < 5; i++) policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+
+      expect(policy.executedToolCalls).toBe(2);
+    });
+
+    it("counts each URL and each tool on its own", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_B))).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_navigate", read(SLIDE_A))).toEqual(ALLOWED);
+    });
+
+    it.each<{ name: string; args: string }>([
+      { name: "a trailing slash", args: JSON.stringify({ url: `${SLIDE_A}/` }) },
+      { name: "a fragment", args: JSON.stringify({ url: `${SLIDE_A}#top` }) },
+      { name: "spaces around the URL", args: JSON.stringify({ url: `  ${SLIDE_A} ` }) },
+      { name: "different spacing in the JSON", args: `{ "url" : "${SLIDE_A}" }` },
+    ])("treats a call that differs only by $name as the same call", ({ args }) => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      policy.authorizeToolCall("moocs_read_slide", args);
+
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(REFUSED);
+    });
+
+    it("ignores the order of the arguments", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("unknown_tool", '{"a":1,"b":2}');
+      policy.authorizeToolCall("unknown_tool", '{"b":2,"a":1}');
+
+      expect(policy.authorizeToolCall("unknown_tool", '{"a":1,"b":2}')).toEqual(REFUSED);
+      expect(policy.authorizeToolCall("unknown_tool", '{"a":1,"b":3}')).toEqual(ALLOWED);
+    });
+
+    it("counts a call with no target per page: the same call on another page is a new call", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_navigate", read(SLIDE_A));
+      expect(policy.authorizeToolCall("moocs_list_slides", "{}")).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_list_slides", "")).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_list_slides", "{}")).toEqual(REFUSED);
+
+      policy.authorizeToolCall("moocs_navigate", read(SLIDE_B));
+
+      expect(policy.authorizeToolCall("moocs_list_slides", "{}")).toEqual(ALLOWED);
+    });
+
+    it("treats a read with a URL as moving to that page", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      policy.authorizeToolCall("moocs_page_content", "{}");
+      policy.authorizeToolCall("moocs_page_content", "{}");
+
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_B));
+
+      expect(policy.authorizeToolCall("moocs_page_content", "{}")).toEqual(ALLOWED);
+    });
+
+    it("does not treat a read without a URL as moving to another page", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_read_slide", "{}");
+      policy.authorizeToolCall("moocs_read_slide", "{}");
+
+      expect(policy.authorizeToolCall("moocs_read_slide", "{}")).toEqual(REFUSED);
+    });
+
+    // 計画の文面は「navigate を挟むとリセット」だが、URL つきの読み取りは数え続ける。
+    // 同じ URL を 3 回読んでも、内容は同じで、得るものがないため。
+    it("still counts a read of the same URL when other pages were opened in between", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      policy.authorizeToolCall("moocs_navigate", read(SLIDE_B));
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      policy.authorizeToolCall("moocs_navigate", read(SLIDE_B));
+
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(REFUSED);
+    });
+
+    it.each(["moocs_login", "moocs_google_login"])(
+      "starts counting again after %s, so a read that failed before the login can be retried",
+      (loginTool) => {
+        const policy = freshPolicy();
+        policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+        policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+        policy.authorizeToolCall("moocs_list_slides", "{}");
+        policy.authorizeToolCall("moocs_list_slides", "{}");
+
+        expect(policy.authorizeToolCall(loginTool, "{}")).toEqual(ALLOWED);
+
+        expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(ALLOWED);
+        expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(ALLOWED);
+        expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toEqual(REFUSED);
+        expect(policy.authorizeToolCall("moocs_list_slides", "{}")).toEqual(ALLOWED);
+      }
+    );
+
+    it("refuses the third login too, even though a login resets the other counts", () => {
+      const policy = freshPolicy();
+
+      expect(policy.authorizeToolCall("moocs_google_login", "{}")).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_login", "{}")).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_google_login", "{}")).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_google_login", "{}")).toEqual(REFUSED);
+      expect(policy.authorizeToolCall("moocs_login", "{}")).toEqual(ALLOWED);
+      expect(policy.authorizeToolCall("moocs_login", "{}")).toEqual(REFUSED);
+    });
+
+    it("counts a call whose arguments are not valid JSON by its raw text", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_navigate", '{"url":');
+      policy.authorizeToolCall("moocs_navigate", '{"url":');
+
+      expect(policy.authorizeToolCall("moocs_navigate", '{"url":')).toEqual(REFUSED);
+      expect(policy.authorizeToolCall("moocs_navigate", '{"url"')).toEqual(ALLOWED);
+    });
+
+    it("reports the budget, not the repeat, when both apply", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A));
+      useTools(policy, MAX_AGENT_TOOL_CALLS - 2, "unknown_tool");
+
+      expect(policy.authorizeToolCall("moocs_read_slide", read(SLIDE_A))).toMatchObject({
+        content: LIMIT_MESSAGE,
+      });
+    });
+
+    it("leaves the plan for the next model call unchanged by a refused repeat", () => {
+      const policy = freshPolicy();
+      policy.authorizeToolCall("unknown_tool", "{}");
+      policy.authorizeToolCall("unknown_tool", "{}");
+      const before = policy.planIteration(1);
+
+      policy.authorizeToolCall("unknown_tool", "{}");
+
+      expect(policy.planIteration(1)).toEqual(before);
     });
   });
 
