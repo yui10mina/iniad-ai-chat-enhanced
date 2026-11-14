@@ -76,10 +76,10 @@ index 0000000..d388bad
 +exports.default = [expandSlideTabTool];
 diff --git a/node_modules/@rarandeyo/iniad-moocs-mcp/lib/tools/extractGoogleSlideText.js b/node_modules/@rarandeyo/iniad-moocs-mcp/lib/tools/extractGoogleSlideText.js
 new file mode 100644
-index 0000000..95751f1
+index 0000000..a94081f
 --- /dev/null
 +++ b/node_modules/@rarandeyo/iniad-moocs-mcp/lib/tools/extractGoogleSlideText.js
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,265 @@
 +"use strict";
 +Object.defineProperty(exports, "__esModule", { value: true });
 +const zod_1 = require("zod");
@@ -141,6 +141,40 @@ index 0000000..95751f1
 +  };
 +}
 +
++function slideSignature(slide) {
++  return slide.slideInfo + "\u0000" + slide.labels.join("\u0001");
++}
++
++/**
++ * スライドの表示が落ち着くまで待つ。以前は固定の時間（最初は 2 秒、送るたびに 600ms）を待っていた。
++ *
++ * previousSignature を渡すと、表示がそれから変わり、かつ settleMs のあいだ変わらなくなったら戻る。
++ * 描画の途中で読むと本文が欠けるので、変わった直後には戻らない。
++ * 表示が変わらないまま timeoutMs が過ぎたら戻る（アニメーションの途中など、送っても
++ * スライドが変わらないことがある。そのときは以前と同じ時間だけ待つことになる）。
++ */
++async function waitForSlideToSettle(slidePage, previousSignature, timeoutMs, settleMs) {
++  const deadline = Date.now() + timeoutMs;
++  let lastSignature = null;
++  let stableSince = Date.now();
++  while (Date.now() < deadline) {
++    const current = await slidePage.evaluate(extractSlideLabelsInBrowser);
++    const signature = slideSignature(current);
++    const now = Date.now();
++    if (signature !== lastSignature) {
++      lastSignature = signature;
++      stableSince = now;
++    } else if (
++      signature !== previousSignature &&
++      current.labels.length > 0 &&
++      now - stableSince >= settleMs
++    ) {
++      return;
++    }
++    await slidePage.waitForTimeout(50);
++  }
++}
++
 +const extractGoogleSlideTextTool = {
 +  schema: {
 +    name: "extractGoogleSlideText",
@@ -199,11 +233,13 @@ index 0000000..95751f1
 +      try {
 +        await slidePage.goto(pubUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
 +        await slidePage.waitForSelector('[aria-label^="スライド"]', { timeout: 20_000 }).catch(() => {});
-+        await slidePage.waitForTimeout(2000);
++        await waitForSlideToSettle(slidePage, null, 2000, 300);
 +
 +        const probe = await slidePage.evaluate(extractSlideLabelsInBrowser);
 +        const totalMatch = probe.slideInfo.match(/スライド \d+\/(\d+)/);
-+        const totalSlides = totalMatch ? Math.min(parseInt(totalMatch[1], 10), 30) : 15;
++        // 番号も本文も出ていなければ、送っても何も取れない（Google にログインしていない場合など）。
++        const nothingShown = !probe.slideInfo && probe.labels.length === 0;
++        const totalSlides = nothingShown ? 0 : totalMatch ? Math.min(parseInt(totalMatch[1], 10), 30) : 15;
 +
 +        const allSlides = [];
 +        const seenKeys = new Set();
@@ -220,8 +256,10 @@ index 0000000..95751f1
 +              });
 +            }
 +          }
++          // 最後の 1 枚を読んだあとは、送る必要がない。
++          if (i === totalSlides - 1) break;
 +          await slidePage.keyboard.press("ArrowRight");
-+          await slidePage.waitForTimeout(600);
++          await waitForSlideToSettle(slidePage, slideSignature(current), 600, 250);
 +        }
 +
 +        const textParts = [];
