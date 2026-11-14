@@ -59,6 +59,8 @@ interface RunStats {
   toolCalls: number;
   limitReached: boolean;
   emptyAnswer: boolean;
+  /** 時間かトークンの予算を超えたら、その種類 */
+  exceededBudget: "time" | "tokens" | null;
 }
 
 const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set(
@@ -111,6 +113,7 @@ export class ChatAgent {
       toolCalls: 0,
       limitReached: false,
       emptyAnswer: false,
+      exceededBudget: null,
     };
 
     // 成功、上限、失敗、キャンセルのどの終わり方でも run_end を 1 回だけ出す。
@@ -133,6 +136,7 @@ export class ChatAgent {
         toolCalls: stats.toolCalls,
         answerChars: response.content.length,
         citations: response.citations.length,
+        ...(stats.exceededBudget ? { exceededBudget: stats.exceededBudget } : {}),
       });
       return response;
     } catch (error) {
@@ -150,6 +154,7 @@ export class ChatAgent {
         toolCalls: stats.toolCalls,
         answerChars: 0,
         citations: 0,
+        ...(stats.exceededBudget ? { exceededBudget: stats.exceededBudget } : {}),
       });
       throw error;
     }
@@ -226,8 +231,15 @@ export class ChatAgent {
         throw new Error("リクエストがキャンセルされました");
       }
 
-      const { forceFinalAnswer, toolBudgetExhausted, allowTools, allowWebSearch, finalAnswerHint } =
-        policy.planIteration(iteration);
+      const {
+        forceFinalAnswer,
+        toolBudgetExhausted,
+        allowTools,
+        allowWebSearch,
+        finalAnswerHint,
+        exceededBudget,
+      } = policy.planIteration(iteration);
+      if (exceededBudget && !stats.exceededBudget) stats.exceededBudget = exceededBudget;
       const apiMessages = prepareApiMessages(messages, toolResultMeta);
 
       stats.iterations = iteration + 1;
@@ -254,6 +266,8 @@ export class ChatAgent {
         throw new Error("API レスポンスに choices がありません");
       }
 
+      const usage = traceUsage(response.usage);
+      policy.recordModelUsage(usage);
       const assistantMsg = choice.message;
       const toolCalls = assistantMsg.tool_calls ?? [];
       trace({
@@ -261,7 +275,7 @@ export class ChatAgent {
         iteration: iteration + 1,
         durationMs: Date.now() - llmStartedAt,
         finishReason: traceFinishReason(choice.finish_reason),
-        usage: traceUsage(response.usage),
+        usage,
         toolCalls: toolCalls.length,
         toolCallsDiscarded: toolCalls.length > 0 && (forceFinalAnswer || toolBudgetExhausted),
         contentChars: assistantMsg.content?.length ?? 0,

@@ -19,6 +19,21 @@ export const MAX_AGENT_TOOL_CALLS = 12;
  */
 export const MAX_IDENTICAL_TOOL_CALLS = 2;
 
+/**
+ * 1 回の実行にかけてよい時間。超えたら、次の問い合わせでツールを渡さずに回答させる。
+ * 実測（30 回）では、最後の問い合わせの直前で最大 99.5 秒だった。通常の質問を打ち切らない値にする。
+ * これがないと、問い合わせ 10 回とツール 12 回がそれぞれ時間切れまで待った場合、30 分を超え得る。
+ */
+export const RUN_TIME_BUDGET_MS = 150_000;
+/**
+ * 1 回の実行で使ってよい入力トークンの合計（API が返す usage の合計）。
+ * 実測では、最後の問い合わせの直前で最大 29,852 だった。
+ */
+export const RUN_PROMPT_TOKEN_BUDGET = 60_000;
+
+/** 予算のうち、どれを超えたか。 */
+export type ExceededBudget = "time" | "tokens";
+
 /** ログインの状態を変えるツール。成功すると、それまで失敗していた呼び出しが通るようになり得る。 */
 const LOGIN_TOOLS: ReadonlySet<string> = new Set(["moocs_login", "moocs_google_login"]);
 
@@ -30,8 +45,10 @@ const REPEATED_CALL_MESSAGE =
 export interface IterationPlan {
   /** 最後の反復か */
   isLastIteration: boolean;
-  /** ツールを渡さず、これまでの情報で回答させる段階か（最後の 2 回） */
+  /** ツールを渡さず、これまでの情報で回答させる段階か（最後の 2 回、または予算を超えたあと） */
   forceFinalAnswer: boolean;
+  /** 時間かトークンの予算を超えていれば、その種類。超えていなければ null */
+  exceededBudget: ExceededBudget | null;
   /** ツール呼び出しの上限に達しているか */
   toolBudgetExhausted: boolean;
   /** この反復でツールを渡すか */
@@ -55,12 +72,20 @@ export class AgentRunPolicy {
   private identicalCallCounts = new Map<string, number>();
   /** 開いているページが変わるたびに進む番号。URL を取らない呼び出しの区別に使う。 */
   private pageEpoch = 0;
+  private readonly now: () => number;
+  private readonly startedAt: number;
+  private promptTokens = 0;
+  /** usage のない応答が 1 回でもあれば false。そのときトークンの予算は使わない。 */
+  private usageKnown = true;
 
   /**
    * @param hasReferenceMaterial 実行の最初から、信頼できない資料（過去の資料や索引のヒント）が
    *   プロンプトに入っているか。入っていれば、Web 検索は最初から使わせない。
+   * @param now 現在時刻（ミリ秒）。テストで時間を進めるために差し替えられる。
    */
-  constructor(options: { hasReferenceMaterial: boolean }) {
+  constructor(options: { hasReferenceMaterial: boolean; now?: () => number }) {
+    this.now = options.now ?? Date.now;
+    this.startedAt = this.now();
     // Do not expose an outward web-search capability after untrusted prior/current
     // material has influenced the model. A single initial search may still be used
     // for ordinary questions before any MCP browsing begins.
@@ -72,19 +97,45 @@ export class AgentRunPolicy {
     return this.toolCallCount;
   }
 
-  /** @param iteration 0 始まりの反復の番号 */
+  /**
+   * AI の応答 1 回分の usage を記録する。usage のない応答があったら、その実行では
+   * トークンの予算を使わない（合計が分からないため）。
+   */
+  recordModelUsage(usage: { promptTokens: number | null } | null): void {
+    if (!usage || usage.promptTokens === null) {
+      this.usageKnown = false;
+      return;
+    }
+    this.promptTokens += usage.promptTokens;
+  }
+
+  /**
+   * 予算は、問い合わせの前（反復の境界）でだけ確かめる。実行中のツールや問い合わせを
+   * 途中で止めないので、それまでに読んだ資料は失われない。超えていたら、次の問い合わせで
+   * ツールを渡さずに回答させる。例外にも、キャンセルにもしない。
+   *
+   * @param iteration 0 始まりの反復の番号
+   */
   planIteration(iteration: number): IterationPlan {
     const isLastIteration = iteration === MAX_ITERATIONS - 1;
-    const forceFinalAnswer = iteration >= MAX_ITERATIONS - 2;
+    const exceededBudget = this.exceededBudget();
+    const forceFinalAnswer = iteration >= MAX_ITERATIONS - 2 || exceededBudget !== null;
     const toolBudgetExhausted = this.toolCallCount >= MAX_AGENT_TOOL_CALLS;
     return {
       isLastIteration,
       forceFinalAnswer,
+      exceededBudget,
       toolBudgetExhausted,
       allowTools: !forceFinalAnswer && !toolBudgetExhausted,
       allowWebSearch: this.webSearchAllowed && !this.mcpExplorationStarted,
-      finalAnswerHint: isLastIteration || toolBudgetExhausted,
+      finalAnswerHint: isLastIteration || toolBudgetExhausted || exceededBudget !== null,
     };
+  }
+
+  private exceededBudget(): ExceededBudget | null {
+    if (this.now() - this.startedAt >= RUN_TIME_BUDGET_MS) return "time";
+    if (this.usageKnown && this.promptTokens >= RUN_PROMPT_TOKEN_BUDGET) return "tokens";
+    return null;
   }
 
   /**

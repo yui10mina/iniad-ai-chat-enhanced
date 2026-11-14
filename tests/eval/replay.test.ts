@@ -40,7 +40,7 @@ describe("agent replay (synthetic data; does not measure answer quality)", () =>
     vi.unstubAllGlobals();
   });
 
-  it("has the seven scenarios", () => {
+  it("has the eight scenarios", () => {
     expect(files).toEqual([
       "failure-after-reading.json",
       "injection-in-page.json",
@@ -48,6 +48,7 @@ describe("agent replay (synthetic data; does not measure answer quality)", () =>
       "many-slides.json",
       "repeated-read.json",
       "three-slides.json",
+      "token-budget.json",
       "truncated-answer.json",
     ]);
   });
