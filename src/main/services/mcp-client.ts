@@ -664,6 +664,11 @@ export class McpClient {
           .passthrough(),
         requestOptions
       );
+      // スライド抽出が返す「スライドがない」「ログインが必要」などは、ツールの失敗ではなく
+      // 読み取りの結果。例外にすると読み取り側が区別できないので、決まった値だけを通す。
+      const slideOutcome =
+        validated.name === "extractGoogleSlideText" ? knownSlideExtractOutcome(result) : null;
+      if (slideOutcome) return slideOutcome;
       this.handleToolResultIssue(result);
       return result;
     } catch (error) {
@@ -1238,6 +1243,64 @@ function raceWithSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise
 function isAbortError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.name === "AbortError" || (error as NodeJS.ErrnoException).code === "ABORT_ERR";
+}
+
+/** スライド抽出ツールが、読み取りの結果として返すエラーの種類。 */
+export const SLIDE_EXTRACT_OUTCOME_ERRORS = [
+  "no_google_slides_iframe",
+  "iframe_src_missing",
+  "presentation_id_not_found",
+  "google_login_required",
+  "empty_slide_text",
+] as const;
+
+const SLIDE_EXTRACT_OUTCOME_ERROR_SET = new Set<string>(SLIDE_EXTRACT_OUTCOME_ERRORS);
+const MAX_OUTCOME_URL_CHARS = 2_048;
+
+/**
+ * スライド抽出のエラー結果が既知の種類なら、エラーの種類と MOOCs の URL だけを残した結果に直す。
+ * 元の結果にはヒントの文や公開ビューアの URL、プレゼンテーションの ID が入っているので、
+ * それらは捨てる（MCP の生のエラー文を外へ出さない方針は変えない）。
+ * 既知の種類でなければ null を返し、呼び出し側はこれまでどおり失敗として扱う。
+ */
+function knownSlideExtractOutcome(result: unknown): { content: unknown[] } | null {
+  if (!result || typeof result !== "object") return null;
+  const { isError, content } = result as { isError?: unknown; content?: unknown };
+  if (isError !== true || !Array.isArray(content)) return null;
+  const first: unknown = content[0];
+  if (!first || typeof first !== "object") return null;
+  const { type, text } = first as { type?: unknown; text?: unknown };
+  if (type !== "text" || typeof text !== "string") return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const { error, moocsUrl } = parsed as { error?: unknown; moocsUrl?: unknown };
+  if (typeof error !== "string" || !SLIDE_EXTRACT_OUTCOME_ERROR_SET.has(error)) return null;
+
+  const outcome: { error: string; moocsUrl?: string } = { error };
+  if (typeof moocsUrl === "string" && isMoocsPageUrl(moocsUrl)) outcome.moocsUrl = moocsUrl;
+  return { content: [{ type: "text", text: JSON.stringify(outcome) }] };
+}
+
+function isMoocsPageUrl(url: string): boolean {
+  if (url.length > MAX_OUTCOME_URL_CHARS) return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === "https:" &&
+      parsed.hostname === "moocs.iniad.org" &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.port
+    );
+  } catch {
+    return false;
+  }
 }
 
 function cancelledError(): McpClientError {
