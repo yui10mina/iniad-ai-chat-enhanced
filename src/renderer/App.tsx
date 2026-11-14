@@ -4,6 +4,7 @@ import { ChatInput } from "./components/ChatInput";
 import { StatusBar } from "./components/StatusBar";
 import { SettingsView } from "./components/SettingsView";
 import { completionNoticeText } from "./completion-notice";
+import { toAssistantTurn } from "../shared/utils/assistant-turn";
 import type { ChatTurn, MaterialContextSummary } from "../shared/types/chat";
 import { CHAT_MODEL, type McpConnectionState } from "../shared/types/settings";
 import "./index.css";
@@ -198,13 +199,7 @@ const App: React.FC = () => {
     try {
       const response = await window.electronAPI.sendChat(text);
 
-      const newAiMsg: ChatTurn = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: response.content,
-        citations: response.citations,
-        timestamp: new Date().toISOString(),
-      };
+      const newAiMsg = toAssistantTurn(response, crypto.randomUUID(), new Date().toISOString());
       try {
         setMessages(await window.electronAPI.getChatHistory());
       } catch {
