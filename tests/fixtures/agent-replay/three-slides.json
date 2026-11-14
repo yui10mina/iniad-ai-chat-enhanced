@@ -1,6 +1,6 @@
 {
   "name": "three-slides",
-  "description": "スライドを 1 回の呼び出しにつき 1 枚ずつ、3 枚読んでから回答する。最後の API 呼び出しでは、直近 2 件より前のツール結果の本文が省略されている（今の動き。文脈の予算化で変わる）。",
+  "description": "スライドを 1 回の呼び出しにつき 1 枚ずつ、3 枚読んでから回答する。3 枚とも文字数の予算に収まるので、最後の API 呼び出しまで本文がすべて残っている（以前は 1 枚目の本文を失っていた）。",
   "question": "TEST101 の第1回の内容を教えてください。",
   "pages": {
     "https://moocs.iniad.org/courses/2099/TEST101/01/01": {
@@ -80,7 +80,7 @@
         "moocs_page_content",
         "moocs_google_login"
       ],
-      "toolResults": ["omitted", "kept", "kept"]
+      "toolResults": ["kept", "kept", "kept"]
     },
     "toolResultsWrapped": true
   }
