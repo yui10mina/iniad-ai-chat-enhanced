@@ -33,13 +33,61 @@ export function mcpResultToText(result: unknown): string {
   return JSON.stringify(result);
 }
 
+/** ツールが失敗した理由。生のエラー文は入れず、決まった値だけを使う。 */
+export type ToolFailureCode =
+  /** 引数が JSON でない、形が違う、MOOCs 以外の URL など */
+  | "invalid_arguments"
+  | "unknown_tool"
+  | "blocked_tool"
+  /** 1 回の質問で使えるツール回数の上限 */
+  | "tool_limit_reached"
+  /** 資料や MCP の出力を読んだあとの web_search */
+  | "web_search_blocked"
+  | "mcp_not_connected"
+  | "mcp_connection_lost"
+  /** MCP がエラーとして返した結果 */
+  | "mcp_error"
+  | "google_login_required"
+  /** スライド抽出がエラーを返した */
+  | "slide_extract_failed"
+  /** ページやスライドから本文を取り出せなかった */
+  | "content_unavailable"
+  | "web_search_failed"
+  /** 実行中に例外が起きた */
+  | "exception";
+
+/**
+ * ツール実行の結果の種類。content の文字列を読まずに成否を判定するために使う。
+ * not_published は非公開のページを読めた場合、no_results は検索結果が 0 件だった場合。
+ */
+export type ToolOutcome =
+  | { ok: true; code: "ok" | "not_published" | "no_results" }
+  | { ok: false; code: ToolFailureCode };
+
+export const TOOL_OK: ToolOutcome = { ok: true, code: "ok" };
+
+export function toolFailure(code: ToolFailureCode): ToolOutcome {
+  return { ok: false, code };
+}
+
 export interface ToolExecutionResult {
   content: string;
   citations: Citation[];
+  outcome: ToolOutcome;
+}
+
+export function isMcpErrorResult(result: unknown): boolean {
+  return (
+    !!result && typeof result === "object" && (result as { isError?: unknown }).isError === true
+  );
 }
 
 export function formatMcpResult(result: unknown, citations: Citation[]): ToolExecutionResult {
   const content = mcpResultToText(result);
   collectCitationsFromText(content, citations);
-  return { content: truncate(content), citations };
+  return {
+    content: truncate(content),
+    citations,
+    outcome: isMcpErrorResult(result) ? toolFailure("mcp_error") : TOOL_OK,
+  };
 }

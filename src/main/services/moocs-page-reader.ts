@@ -6,6 +6,7 @@ import {
   parseGoogleSlideExtract,
   formatSlideTextForLlm,
   isReadableSlideText,
+  type GoogleSlideExtractResult,
 } from "../../shared/utils/google-slide-text";
 import {
   getMoocsPageKind,
@@ -14,7 +15,14 @@ import {
   pageCitationTitle,
   type MoocsPageKind,
 } from "./moocs-page-kind";
-import { mcpResultToText, truncate, type ToolExecutionResult } from "./mcp-result";
+import {
+  TOOL_OK,
+  mcpResultToText,
+  toolFailure,
+  truncate,
+  type ToolExecutionResult,
+  type ToolOutcome,
+} from "./mcp-result";
 
 const MAX_SNAPSHOT_CHARS = 3_000;
 
@@ -46,7 +54,11 @@ export class MoocsPageReader {
       if (parsed?.text && isReadableSlideText(parsed.text)) {
         const moocsUrl = parsed.moocsUrl;
         if (moocsUrl) citations.push(this.buildCitation(moocsUrl, "MOOCs スライド"));
-        return this.withMaterials(truncate(formatSlideTextForLlm(parsed, moocsUrl)), citations);
+        return this.withMaterials(
+          truncate(formatSlideTextForLlm(parsed, moocsUrl)),
+          citations,
+          slideExtractOutcome(parsed)
+        );
       }
     } catch (error) {
       if (this.signal?.aborted) throw error;
@@ -63,7 +75,12 @@ export class MoocsPageReader {
     if (moocsUrl && this.slideReadCache?.has(moocsUrl)) {
       const cached = this.slideReadCache.get(moocsUrl)!;
       citations.push(this.buildCitation(moocsUrl, "MOOCs スライド"));
-      return this.withMaterials(cached, citations);
+      // キャッシュは本文の文字列だけを持つ。非公開のページは、自分で付けた Status 行で見分ける。
+      return this.withMaterials(
+        cached,
+        citations,
+        isPrivatePageContent(cached) ? { ok: true, code: "not_published" } : TOOL_OK
+      );
     }
 
     if (moocsUrl) {
@@ -83,7 +100,7 @@ export class MoocsPageReader {
           `MOOCs URL: ${moocsUrl}\nSource: slides-index\n\n${indexedEntry.text}`
         );
         this.slideReadCache?.set(moocsUrl, content);
-        return this.withMaterials(content, citations);
+        return this.withMaterials(content, citations, TOOL_OK);
       }
     }
 
@@ -110,13 +127,16 @@ export class MoocsPageReader {
         content:
           "Error: google_login_required — this page has Google Slides. Call moocs_google_login once, then retry. If login times out, tell the user MOOCs may need manual Google sign-in in Settings.",
         citations,
+        outcome: toolFailure("google_login_required"),
       };
     }
 
     if (parsed?.text && isReadableSlideText(parsed.text)) {
       const content = truncate(formatSlideTextForLlm(parsed, resolvedUrl));
-      if (resolvedUrl) this.slideReadCache?.set(resolvedUrl, content);
-      return this.withMaterials(content, citations);
+      const outcome = slideExtractOutcome(parsed);
+      // エラーつきの抽出結果はキャッシュしない。キャッシュから返すと成功と区別できなくなる。
+      if (resolvedUrl && outcome.ok) this.slideReadCache?.set(resolvedUrl, content);
+      return this.withMaterials(content, citations, outcome);
     }
 
     if (resolvedUrl && this.slidesIndex?.isLoaded()) {
@@ -126,18 +146,26 @@ export class MoocsPageReader {
           `MOOCs URL: ${resolvedUrl}\nSource: slides-index (fallback)\n\n${indexedEntry.text}`
         );
         this.slideReadCache?.set(resolvedUrl, content);
-        return this.withMaterials(content, citations);
+        return this.withMaterials(content, citations, TOOL_OK);
       }
     }
 
     if (parsed) {
-      return { content: formatSlideTextForLlm(parsed, moocsUrl), citations };
+      // 本文として読めなかった抽出結果。エラーがあればそれを、なければ本文なしを理由にする。
+      return {
+        content: formatSlideTextForLlm(parsed, moocsUrl),
+        citations,
+        outcome: parsed.error
+          ? toolFailure("slide_extract_failed")
+          : toolFailure("content_unavailable"),
+      };
     }
 
     return {
       content:
         "Error: could not extract slide text. Try moocs_google_login if Google login wall appears.",
       citations,
+      outcome: toolFailure("content_unavailable"),
     };
   }
 
@@ -151,6 +179,7 @@ export class MoocsPageReader {
       return {
         content: `Error: empty page content for ${moocsUrl} (pageKind=${pageKind})`,
         citations,
+        outcome: toolFailure("content_unavailable"),
       };
     }
 
@@ -165,7 +194,11 @@ export class MoocsPageReader {
 
     const content = truncate(lines.join("\n"));
     this.slideReadCache?.set(moocsUrl, content);
-    return this.withMaterials(content, citations, !isPrivate);
+    return this.withMaterials(
+      content,
+      citations,
+      isPrivate ? { ok: true, code: "not_published" } : TOOL_OK
+    );
   }
 
   private buildCitation(url: string, fallbackTitle: string): Citation {
@@ -187,21 +220,25 @@ export class MoocsPageReader {
     };
   }
 
+  /** 本文を読めた結果（outcome.code が "ok"）だけを、保存してよい資料として付ける。 */
   private withMaterials(
     content: string,
     citations: Citation[],
-    recordable = true
+    outcome: ToolOutcome
   ): MaterialToolExecutionResult {
-    if (!recordable || !isRecordableMaterial(content)) return { content, citations };
+    if (outcome.code !== "ok" || !isRecordableMaterial(content)) {
+      return { content, citations, outcome };
+    }
     // A read operation returns one page body. When navigation and extraction
     // produce multiple citations, the last citation is the resolved page that
     // actually owns that body; duplicating it across every citation would retain
     // incorrect material↔content associations.
     const primaryCitation = citations.at(-1);
-    if (!primaryCitation) return { content, citations };
+    if (!primaryCitation) return { content, citations, outcome };
     return {
       content,
       citations,
+      outcome,
       materials: [
         {
           title: primaryCitation.title,
@@ -220,12 +257,22 @@ function formatIndexNumber(value: string): string {
   return Number.isFinite(parsed) ? String(parsed) : value;
 }
 
+/** スライド抽出の結果がエラーを含むかどうかで、成否を決める。 */
+function slideExtractOutcome(parsed: GoogleSlideExtractResult): ToolOutcome {
+  return parsed.error ? toolFailure("slide_extract_failed") : TOOL_OK;
+}
+
+/** 成否は outcome で判定済み。ここでは本文として残す意味があるかだけを見る。 */
 function isRecordableMaterial(content: string): boolean {
   return (
     content.trim().length > 0 &&
-    !/^(?:Error:|Tool error:|Navigated to)/i.test(content.trim()) &&
-    !/^Status:\s*非公開/im.test(content)
+    !/^Navigated to/i.test(content.trim()) &&
+    !isPrivatePageContent(content)
   );
+}
+
+function isPrivatePageContent(content: string): boolean {
+  return /^Status:\s*非公開/im.test(content);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
