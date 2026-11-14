@@ -829,3 +829,138 @@ describe("McpClient MOOCs login reuse", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("McpClient slide extraction outcomes", () => {
+  beforeEach(resetSdkMocks);
+
+  const MOOCS_URL = "https://moocs.iniad.org/courses/2099/TEST101/vod01/01";
+
+  function extractError(payload: Record<string, unknown>) {
+    return { isError: true, content: [{ type: "text", text: JSON.stringify(payload) }] };
+  }
+
+  async function connected() {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const listener = vi.fn();
+    client.onConnectionIssue(listener);
+    return { client, listener };
+  }
+
+  it.each([
+    "no_google_slides_iframe",
+    "iframe_src_missing",
+    "presentation_id_not_found",
+    "google_login_required",
+    "empty_slide_text",
+  ])("returns %s as a result instead of throwing, and keeps the connection", async (error) => {
+    const { client, listener } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(extractError({ error, moocsUrl: MOOCS_URL }));
+
+    await expect(client.extractGoogleSlideText()).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify({ error, moocsUrl: MOOCS_URL }) }],
+    });
+
+    expect(client.getStatus()).toBe("connected");
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("keeps only the error kind and the MOOCs URL from the tool's result", async () => {
+    const { client } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(
+      extractError({
+        error: "empty_slide_text",
+        moocsUrl: MOOCS_URL,
+        presentationId: "secret-presentation-id",
+        pubUrl: "https://docs.google.com/presentation/d/secret-presentation-id/pub",
+        hint: "raw hint text",
+        slideCount: 0,
+        charCount: 0,
+      })
+    );
+
+    const result = await client.extractGoogleSlideText();
+
+    expect(JSON.stringify(result)).toBe(
+      JSON.stringify({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ error: "empty_slide_text", moocsUrl: MOOCS_URL }),
+          },
+        ],
+      })
+    );
+  });
+
+  it.each([
+    "https://moocs.iniad.org.evil.example/courses/2099/TEST101/01/01",
+    "http://moocs.iniad.org/courses/2099/TEST101/01/01",
+    "https://user:pass@moocs.iniad.org/courses/2099/TEST101/01/01",
+    "not a url",
+  ])("drops a URL that is not a MOOCs page (%s)", async (moocsUrl) => {
+    const { client } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(extractError({ error: "empty_slide_text", moocsUrl }));
+
+    await expect(client.extractGoogleSlideText()).resolves.toEqual({
+      content: [{ type: "text", text: JSON.stringify({ error: "empty_slide_text" }) }],
+    });
+  });
+
+  it("still throws the generic failure for an error kind it does not know", async () => {
+    const { client } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(
+      extractError({ error: "something_new", moocsUrl: MOOCS_URL, detail: "secret-detail" })
+    );
+
+    const error = await client.extractGoogleSlideText().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(McpClientError);
+    expect((error as McpClientError).message).toBe("MCP ツールの実行に失敗しました。");
+    expect((error as McpClientError).message).not.toContain("secret-detail");
+  });
+
+  it("still throws for an error result that is not JSON", async () => {
+    const { client } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: "text", text: "extractGoogleSlideText failed: page crashed" }],
+    });
+
+    await expect(client.extractGoogleSlideText()).rejects.toBeInstanceOf(McpClientError);
+  });
+
+  it("does not let another tool pass an error through by using the same wording", async () => {
+    const { client } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(
+      extractError({ error: "empty_slide_text", moocsUrl: MOOCS_URL })
+    );
+
+    await expect(client.callToolSafe("listSlideLinks")).rejects.toBeInstanceOf(McpClientError);
+  });
+
+  it("does not rewrite a result that is not marked as an error", async () => {
+    const { client } = await connected();
+    const unmarked = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ error: "empty_slide_text", moocsUrl: MOOCS_URL, charCount: 0 }),
+        },
+      ],
+    };
+    sdkMocks.callTool.mockResolvedValueOnce(unmarked);
+
+    await expect(client.extractGoogleSlideText()).resolves.toEqual(unmarked);
+  });
+
+  it("leaves a successful extraction untouched", async () => {
+    const { client } = await connected();
+    const success = {
+      content: [{ type: "text", text: JSON.stringify({ moocsUrl: MOOCS_URL, text: "本文" }) }],
+    };
+    sdkMocks.callTool.mockResolvedValueOnce(success);
+
+    await expect(client.extractGoogleSlideText()).resolves.toEqual(success);
+  });
+});

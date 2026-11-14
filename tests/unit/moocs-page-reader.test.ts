@@ -215,6 +215,103 @@ describe("MoocsPageReader", () => {
       expect(result.materials).toBeUndefined();
     });
 
+    describe("slides whose text cannot be extracted", () => {
+      const VOD_URL = "https://moocs.iniad.org/courses/2099/TEST101/01/03";
+      const PAGE = "合成のページ。これは架空の本文で、実在の教材ではない。見出しとリンクがある。";
+      const NOTE = "Slides: このページにはスライドがありますが、文字を取り出せませんでした。";
+
+      it.each(["empty_slide_text", "iframe_src_missing", "presentation_id_not_found"])(
+        "returns the page's HTML with a note for %s",
+        async (error) => {
+          const mcpClient = createMcpMock({
+            extractGoogleSlideText: extractReturning({ error, moocsUrl: VOD_URL }),
+            getPageSnapshot: vi.fn().mockResolvedValue(PAGE),
+          });
+          const reader = new MoocsPageReader(mcpClient);
+
+          const result = await reader.readPage(VOD_URL);
+
+          expect(result.outcome).toEqual({ ok: true, code: "ok" });
+          expect(result.content).toContain(NOTE);
+          expect(result.content).toContain("読み直しても結果は変わりません");
+          expect(result.content).toContain(PAGE);
+          expect(result.content.startsWith(`MOOCs URL: ${VOD_URL}\n`)).toBe(true);
+          expect(result.materials).toEqual([
+            expect.objectContaining({ url: VOD_URL, content: expect.stringContaining(PAGE) }),
+          ]);
+        }
+      );
+
+      it("does not try the extraction again for the same page in the same chat", async () => {
+        const cache = new Map<string, string>();
+        const mcpClient = createMcpMock({
+          extractGoogleSlideText: extractReturning({
+            error: "empty_slide_text",
+            moocsUrl: VOD_URL,
+          }),
+          getPageSnapshot: vi.fn().mockResolvedValue(PAGE),
+        });
+        const reader = new MoocsPageReader(mcpClient, undefined, cache);
+
+        await reader.readPage(VOD_URL);
+        const again = await reader.readPage(VOD_URL);
+
+        expect(mcpClient.extractGoogleSlideText).toHaveBeenCalledTimes(1);
+        expect(again.content).toContain(NOTE);
+      });
+
+      it("uses the URL from the extraction result when it was called without one", async () => {
+        const cache = new Map<string, string>();
+        const mcpClient = createMcpMock({
+          extractGoogleSlideText: extractReturning({
+            error: "empty_slide_text",
+            moocsUrl: VOD_URL,
+          }),
+          getPageSnapshot: vi.fn().mockResolvedValue(PAGE),
+        });
+        const reader = new MoocsPageReader(mcpClient, undefined, cache);
+
+        const result = await reader.readPage();
+
+        expect(mcpClient.navigateTo).not.toHaveBeenCalled();
+        expect(result.content.startsWith(`MOOCs URL: ${VOD_URL}\n`)).toBe(true);
+        expect(result.content).toContain(NOTE);
+        expect(result.citations.map((citation) => citation.url)).toEqual([VOD_URL]);
+        expect([...cache.keys()]).toEqual([VOD_URL]);
+      });
+
+      it("does not add the note when the page simply has no slides", async () => {
+        const mcpClient = createMcpMock({
+          extractGoogleSlideText: extractReturning({
+            error: "no_google_slides_iframe",
+            moocsUrl: VOD_URL,
+          }),
+          getPageSnapshot: vi.fn().mockResolvedValue(PAGE),
+        });
+        const reader = new MoocsPageReader(mcpClient);
+
+        const result = await reader.readPage(VOD_URL);
+
+        expect(result.outcome).toEqual({ ok: true, code: "ok" });
+        expect(result.content).toContain(PAGE);
+        expect(result.content).not.toContain("Slides:");
+      });
+
+      it("does not cache a page whose URL is unknown", async () => {
+        const cache = new Map<string, string>();
+        const mcpClient = createMcpMock({
+          extractGoogleSlideText: extractReturning({ error: "empty_slide_text" }),
+          getPageSnapshot: vi.fn().mockResolvedValue(PAGE),
+        });
+        const reader = new MoocsPageReader(mcpClient, undefined, cache);
+
+        const result = await reader.readPage();
+
+        expect(result.content).toContain(NOTE);
+        expect(cache.size).toBe(0);
+      });
+    });
+
     it("marks a private page as read but not published, also when it comes from the cache", async () => {
       const cache = new Map<string, string>();
       const reader = new MoocsPageReader(createMcpMock(), undefined, cache);

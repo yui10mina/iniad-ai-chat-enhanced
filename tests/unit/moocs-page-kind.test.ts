@@ -48,5 +48,18 @@ describe("moocs-page-kind", () => {
         "第1回 / 演習課題"
       );
     });
+
+    // 講義回が数字でないコースがある（例: vod01）。「第vod01回」とは表示しない。
+    it("shows a lecture id that is not a number as it is", () => {
+      expect(inferMoocsLocation("https://moocs.iniad.org/courses/2099/TEST101/vod01/02")).toBe(
+        "vod01 / 資料2"
+      );
+      expect(inferMoocsLocation("https://moocs.iniad.org/courses/2099/TEST101/vod01")).toBe(
+        "vod01"
+      );
+      expect(inferMoocsLocation("https://moocs.iniad.org/courses/2099/TEST101/vod01/review")).toBe(
+        "vod01 / 課題解説"
+      );
+    });
   });
 });

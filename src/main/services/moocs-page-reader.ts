@@ -26,6 +26,20 @@ import {
 
 const MAX_SNAPSHOT_CHARS = 3_000;
 
+/** スライドはあるが文字を取り出せなかった、という抽出結果。ページの HTML を代わりに読む。 */
+const SLIDE_TEXT_UNAVAILABLE_ERRORS = new Set([
+  "iframe_src_missing",
+  "presentation_id_not_found",
+  "empty_slide_text",
+]);
+
+/**
+ * スライドの文字を取り出せなかったときに、HTML の内容に添える一文。
+ * 何も言わないと、モデルは同じページの読み直しを繰り返す（1 回の抽出に 30 秒以上かかる）。
+ */
+const SLIDE_TEXT_UNAVAILABLE_NOTE =
+  "Slides: このページにはスライドがありますが、文字を取り出せませんでした。読み直しても結果は変わりません。以下のページの内容だけを使ってください。";
+
 export interface MaterialToolExecutionResult extends ToolExecutionResult {
   /** Main 内の資料コンテキストへ保存してよい、実本文を伴う資料だけを格納する。 */
   materials?: MaterialContextInput[];
@@ -119,7 +133,16 @@ export class MoocsPageReader {
     }
 
     if (parsed?.error === "no_google_slides_iframe") {
-      return this.readHtmlMoocsPage(moocsUrl ?? "", pageKind, citations);
+      return this.readHtmlMoocsPage(resolvedUrl ?? "", pageKind, citations);
+    }
+
+    if (parsed?.error && SLIDE_TEXT_UNAVAILABLE_ERRORS.has(parsed.error)) {
+      return this.readHtmlMoocsPage(
+        resolvedUrl ?? "",
+        pageKind,
+        citations,
+        SLIDE_TEXT_UNAVAILABLE_NOTE
+      );
     }
 
     if (parsed?.error === "google_login_required") {
@@ -172,7 +195,8 @@ export class MoocsPageReader {
   private async readHtmlMoocsPage(
     moocsUrl: string,
     pageKind: MoocsPageKind,
-    citations: Citation[]
+    citations: Citation[],
+    note?: string
   ): Promise<MaterialToolExecutionResult> {
     const snapshot = await withAbort(this.mcpClient.getPageSnapshot(this.signal), this.signal);
     if (!snapshot) {
@@ -188,12 +212,14 @@ export class MoocsPageReader {
       `MOOCs URL: ${moocsUrl}`,
       `Page kind: ${pageKind} (HTML page, not Google Slides)`,
       isPrivate ? "Status: 非公開（講師が公開するまで内容は閲覧できません）" : "",
+      note ?? "",
       "",
       snapshot.slice(0, MAX_SNAPSHOT_CHARS),
     ].filter(Boolean);
 
     const content = truncate(lines.join("\n"));
-    this.slideReadCache?.set(moocsUrl, content);
+    // URL が分からないページ（URL なしで呼ばれ、抽出結果にも URL がなかった）はキャッシュしない。
+    if (moocsUrl) this.slideReadCache?.set(moocsUrl, content);
     return this.withMaterials(
       content,
       citations,

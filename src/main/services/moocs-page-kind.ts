@@ -52,7 +52,8 @@ export function inferMoocsLocation(url: string): string | undefined {
       const parsed = Number.parseInt(value, 10);
       return Number.isFinite(parsed) ? String(parsed) : value;
     };
-    const lectureLabel = `第${formatIndexNumber(lecture)}回`;
+    // 講義回が数字のときだけ「第N回」にする。vod01 のような名前はそのまま出す。
+    const lectureLabel = /^\d+$/.test(lecture) ? `第${formatIndexNumber(lecture)}回` : lecture;
     if (!page) return lectureLabel;
     if (/^\d+$/.test(page)) return `${lectureLabel} / 資料${formatIndexNumber(page)}`;
     if (page === "review") return `${lectureLabel} / 課題解説`;
