@@ -3,6 +3,7 @@ import { ChatView } from "./components/ChatView";
 import { ChatInput } from "./components/ChatInput";
 import { StatusBar } from "./components/StatusBar";
 import { SettingsView } from "./components/SettingsView";
+import { completionNoticeText } from "./completion-notice";
 import type { ChatTurn, MaterialContextSummary } from "../shared/types/chat";
 import { CHAT_MODEL, type McpConnectionState } from "../shared/types/settings";
 import "./index.css";
@@ -210,6 +211,8 @@ const App: React.FC = () => {
         // Main の上限と同じ200件に抑え、同期失敗時も表示だけが無制限に増えないようにする。
         setMessages((previous) => [...previous, newAiMsg].slice(-200));
       }
+      const incompleteNotice = completionNoticeText(response.completion);
+      if (incompleteNotice) setNotice({ type: "info", text: incompleteNotice });
       await refreshMaterialContext();
     } catch (error) {
       const errMsg = describeError(error);

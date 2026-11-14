@@ -48,6 +48,12 @@ export interface ChatResponse {
   citations: Citation[];
   /** レスポンスのレイテンシ（ミリ秒） */
   latencyMs?: number;
+  /**
+   * 回答が最後まで書かれずに終わった理由。最後まで書かれた回答では付かない。
+   * truncated: 出力の上限で切れた（finish_reason=length）
+   * filtered: コンテンツフィルタで止められた（finish_reason=content_filter）
+   */
+  completion?: "truncated" | "filtered";
 }
 
 /** OpenAI 互換のツール定義 */
@@ -90,7 +96,8 @@ export interface ChatCompletionResponse {
       content: string | null;
       tool_calls?: ChatToolCall[];
     };
-    finish_reason: string;
+    /** OpenAI 互換の実装によっては付かないことがある */
+    finish_reason?: string | null;
   }[];
   usage?: {
     prompt_tokens: number;

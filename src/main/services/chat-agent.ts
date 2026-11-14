@@ -234,14 +234,20 @@ export class ChatAgent {
       }
 
       const content = assistantMsg.content?.trim() ?? "";
+      const completion = completionFromFinishReason(choice.finish_reason);
       if (!content) {
-        throw new Error("API が空の回答を返しました");
+        throw new Error(EMPTY_ANSWER_MESSAGES[completion ?? "empty"]);
+      }
+      if (completion) {
+        console.warn(`[Agent] answer incomplete (finish_reason=${choice.finish_reason})`);
       }
 
       return {
         content,
         citations: allCitations.slice(0, 8),
         latencyMs: Date.now() - startTime,
+        // 本文は書き換えず、途中で終わったことだけを Renderer に伝える。
+        ...(completion ? { completion } : {}),
       };
     }
 
@@ -504,6 +510,23 @@ function mergeCitation(citations: Citation[], incoming: Citation): void {
     sourceType: incoming.sourceType ?? current.sourceType,
   };
 }
+
+/**
+ * 最後まで書き終えていない回答の理由。finish_reason がない応答や stop は完了として扱う。
+ */
+function completionFromFinishReason(
+  finishReason: string | null | undefined
+): ChatResponse["completion"] {
+  if (finishReason === "length") return "truncated";
+  if (finishReason === "content_filter") return "filtered";
+  return undefined;
+}
+
+const EMPTY_ANSWER_MESSAGES: Record<NonNullable<ChatResponse["completion"]> | "empty", string> = {
+  empty: "API が空の回答を返しました",
+  truncated: "回答が出力の上限に達し、本文が返りませんでした。質問を分けて再度お試しください。",
+  filtered: "回答がコンテンツフィルタで止められ、本文が返りませんでした。",
+};
 
 function wrapUntrustedReference(content: string, label: string): string {
   return [
