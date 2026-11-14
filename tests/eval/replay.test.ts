@@ -40,12 +40,13 @@ describe("agent replay (synthetic data; does not measure answer quality)", () =>
     vi.unstubAllGlobals();
   });
 
-  it("has the six scenarios", () => {
+  it("has the seven scenarios", () => {
     expect(files).toEqual([
       "failure-after-reading.json",
       "injection-in-page.json",
       "iteration-limit.json",
       "many-slides.json",
+      "repeated-read.json",
       "three-slides.json",
       "truncated-answer.json",
     ]);
@@ -123,6 +124,20 @@ describe("agent replay (synthetic data; does not measure answer quality)", () =>
     const keptChars = toolResults.slice(2).reduce((sum, content) => sum + content.length, 0);
     expect(keptChars).toBeLessThanOrEqual(12_000);
     expect(keptChars).toBeGreaterThan(8_000);
+  });
+
+  it("runs a repeated read twice and then tells the model to use what it has", async () => {
+    const fixture = load("repeated-read.json");
+
+    const { requests, events } = await runReplay(fixture);
+
+    const lastToolResult = requests[requests.length - 1].messages
+      .filter((message) => message.role === "tool")
+      .map((message) => String(message.content))
+      .pop();
+    expect(lastToolResult).toContain("this exact tool call was already made twice");
+    // 断った呼び出しは、実行したツールの数に入らない。
+    expect(events[events.length - 1]).toMatchObject({ reason: "answered", toolCalls: 2 });
   });
 
   it("keeps the injected text inside the boundary and never searches for it", async () => {
