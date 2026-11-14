@@ -65,6 +65,8 @@ export class ChatRunner {
       content: userText,
       timestamp: new Date().toISOString(),
     };
+    // 失敗したときにも残せるよう、取得した資料は try の外で持つ。
+    const retrievedMaterials: MaterialContextInput[] = [];
 
     try {
       // 待つものがないときまで await すると、回答の生成の開始が 1 ティック遅れる。
@@ -76,7 +78,6 @@ export class ChatRunner {
       }
 
       const priorMaterials = store.selectRelevantMaterials(userText);
-      const retrievedMaterials: MaterialContextInput[] = [];
       const response = await chatAgent.chat(
         userText,
         settings,
@@ -113,6 +114,10 @@ export class ChatRunner {
       if (controller.signal.aborted) {
         throw new AppError("CHAT_CANCELLED", "リクエストがキャンセルされました");
       }
+      // 途中で失敗しても、読み終えた資料は次の質問で使えるように残す。
+      // キャンセルは利用者が打ち切った操作なので、上の分岐で何も残さずに終える。
+      // 履歴は増やさず、使った資料の参照順も変えない（回答が確定していないため）。
+      store.addMaterials(retrievedMaterials);
       const serialized = toSerializableError(error);
       throw new AppError(serialized.code, serialized.message);
     }

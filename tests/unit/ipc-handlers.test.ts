@@ -1,7 +1,7 @@
 /**
  * IPC ハンドラーの「今の動き」を固定するテスト。本番コードは変えない。
  * 信頼境界（誰の呼び出しを受けるか）と、chat:send が履歴と資料をいつ保存するかを見る。
- * 途中で失敗したときに取得済みの資料を捨てるのは今の動きで、計画の PR11 で反転する。
+ * 途中で失敗しても取得済みの資料は残す（PR11 で反転した）。キャンセルしたときは残さない。
  *
  * ipc-handlers は import した時点でサービスを作るので、electron、app-services、
  * settings-store、mcp-credential-test を差し替え、テストごとにモジュールを読み直す。
@@ -163,6 +163,14 @@ function chatUntilAborted(): ChatFn {
     });
 }
 
+/** 資料を 1 件取得したあとで失敗する回答。 */
+function failAfterRetrieving(material: MaterialContextInput): ChatFn {
+  return async (...args) => {
+    args[4].onMaterialsRetrieved?.([material]);
+    throw new Error("途中で失敗");
+  };
+}
+
 let ipc: typeof import("../../src/main/ipc-handlers");
 
 beforeEach(async () => {
@@ -315,15 +323,59 @@ describe("IPC handlers (current behaviour)", () => {
       expect(store().getHistory()).toEqual([]);
     });
 
-    it("discards material retrieved before a failure (reversed in PR11)", async () => {
-      fakes.chat.mockImplementation(async (...args: Parameters<ChatFn>) => {
-        args[4].onMaterialsRetrieved?.([MATERIAL]);
-        throw new Error("途中で失敗");
+    it("keeps material retrieved before a failure", async () => {
+      fakes.chat.mockImplementation(failAfterRetrieving(MATERIAL));
+
+      await expect(invoke("chat:send", "質問")).rejects.toMatchObject({
+        name: "AppError",
+        code: "UNKNOWN",
+        message: "途中で失敗",
       });
+
+      expect(store().getMaterialContextSummaries()).toMatchObject([{ url: MATERIAL.url }]);
+    });
+
+    it("adds nothing to the history when a failure leaves material behind", async () => {
+      fakes.chat.mockImplementation(failAfterRetrieving(MATERIAL));
 
       await expect(invoke("chat:send", "質問")).rejects.toMatchObject({ message: "途中で失敗" });
 
-      expect(store().getMaterialContextSummaries()).toEqual([]);
+      expect(store().getHistory()).toEqual([]);
+    });
+
+    it("offers the material kept from a failed question to the next question", async () => {
+      fakes.chat
+        .mockImplementationOnce(failAfterRetrieving(MATERIAL))
+        .mockResolvedValueOnce(ANSWER);
+      await expect(invoke("chat:send", "1問目")).rejects.toMatchObject({ message: "途中で失敗" });
+
+      await invoke("chat:send", "TCP について教えて");
+
+      const context = (fakes.chat.mock.calls[1] as Parameters<ChatFn>)[4];
+      expect(context.priorMaterials).toMatchObject([{ url: MATERIAL.url }]);
+    });
+
+    it("does not move earlier material to the front when the question that used it fails", async () => {
+      const other: MaterialContextInput = {
+        ...MATERIAL,
+        title: "第2回 スライド",
+        url: "https://moocs.iniad.org/courses/2026/TEST/2/1",
+        content: "UDP は接続を確立しない。",
+      };
+      store().addMaterial(MATERIAL);
+      store().addMaterial(other);
+      fakes.chat.mockRejectedValue(new Error("失敗"));
+
+      await expect(invoke("chat:send", "TCP について教えて")).rejects.toMatchObject({
+        message: "失敗",
+      });
+
+      // 回答が確定していないので、使われた資料の「最近参照した」順は変えない。
+      expect(
+        store()
+          .getMaterialContextSummaries()
+          .map((summary) => summary.url)
+      ).toEqual([other.url, MATERIAL.url]);
     });
 
     it("accepts the next question after a failure", async () => {
@@ -371,6 +423,21 @@ describe("IPC handlers (current behaviour)", () => {
       await outcome;
 
       expect(store().getHistory()).toEqual([]);
+    });
+
+    it("discards material retrieved before a cancel", async () => {
+      fakes.chat.mockImplementation((...args: Parameters<ChatFn>) => {
+        args[4].onMaterialsRetrieved?.([MATERIAL]);
+        return chatUntilAborted()(...args);
+      });
+      const running = invoke("chat:send", "質問");
+      const outcome = expect(running).rejects.toMatchObject({ code: "CHAT_CANCELLED" });
+
+      await invoke("chat:cancel");
+      expect(signalOfCall(0).aborted).toBe(true);
+      await outcome;
+
+      expect(store().getMaterialContextSummaries()).toEqual([]);
     });
 
     it("stores nothing when the agent resolves after the cancel instead of rejecting", async () => {
