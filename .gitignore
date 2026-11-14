@@ -97,3 +97,6 @@ dist/
 
 # Auto-generated reviewer artifacts
 coderabbit_comment.md
+
+# live 評価の出力（回答文に教材の内容が含まれるのでコミットしない）
+eval-output/
