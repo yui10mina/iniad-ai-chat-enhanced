@@ -82,6 +82,7 @@ npm exec playwright install chromium
 ```
 iniad-ai-chat-enhanced/
 ├── docs/
+│   ├── architecture.md   # 現在の実装の説明
 │   ├── design.md         # 初期設計書（MVP 時点。現在の実装とは異なる）
 │   ├── assignment.md     # タスク割当表
 │   └── proposal.md       # 提案書
@@ -119,6 +120,7 @@ iniad-ai-chat-enhanced/
 
 ## ドキュメント
 
+- [アーキテクチャ](docs/architecture.md) — 現在の実装の説明。質問 1 件の流れ、エージェントのループと方針、信頼の境界、実行の記録、テストと評価
 - [提案書](docs/proposal.md) — プロジェクトの背景・目的・技術選定
 - [初期設計書](docs/design.md) — MVP 時点（2026 年 4 月）の設計。回答の生成方式、MCP の起動方法、Web 検索などは現在の実装と異なります（冒頭に差分の一覧あり）
 - [タスク割当表](docs/assignment.md) — メンバー別タスク・スケジュール
