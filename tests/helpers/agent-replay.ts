@@ -29,6 +29,8 @@ export interface ReplayReply {
   finishReason?: string;
   /** この回の API 呼び出しを HTTP エラーにする */
   httpError?: number;
+  /** この回の応答に付ける入力トークン数。省略すると usage のない応答になる。 */
+  promptTokens?: number;
 }
 
 /** 実行結果の要約。fixture の expect と丸ごと比べる。 */
@@ -55,6 +57,8 @@ export interface ReplaySummary {
   };
   /** 本文の残っているツール結果が、どの API 呼び出しでも境界で正しく包まれているか */
   toolResultsWrapped: boolean;
+  /** 時間かトークンの予算を超えて調査を打ち切った場合の、超えた予算。超えていなければ付かない。 */
+  exceededBudget?: string;
 }
 
 export interface ReplayFixture {
@@ -125,6 +129,15 @@ function toFakeReply(reply: ReplayReply, requestIndex: number): FakeReply {
     content: reply.content,
     finishReason: reply.finishReason,
     httpError: reply.httpError,
+    ...(reply.promptTokens === undefined
+      ? {}
+      : {
+          usage: {
+            prompt_tokens: reply.promptTokens,
+            completion_tokens: 0,
+            total_tokens: reply.promptTokens,
+          },
+        }),
     toolCalls: reply.toolCalls?.map((call, callIndex) => ({
       id: `call_${requestIndex}_${callIndex}`,
       name: call.name,
@@ -199,6 +212,9 @@ export async function runReplay(fixture: ReplayFixture): Promise<ReplayRun> {
         .filter((content) => !isOmitted(content))
         .every(isWrappedToolResult)
     ),
+    ...(runEnd?.type === "run_end" && runEnd.exceededBudget
+      ? { exceededBudget: runEnd.exceededBudget }
+      : {}),
   };
   return { summary, requests: llm.requests, events };
 }

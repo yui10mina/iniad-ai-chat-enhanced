@@ -8,6 +8,8 @@ import {
   MAX_AGENT_TOOL_CALLS,
   MAX_IDENTICAL_TOOL_CALLS,
   MAX_ITERATIONS,
+  RUN_PROMPT_TOKEN_BUDGET,
+  RUN_TIME_BUDGET_MS,
 } from "../../src/main/services/agent-run-policy";
 
 const NAVIGATE_ARGS = '{"url":"https://moocs.iniad.org/courses/2099/TEST101"}';
@@ -346,6 +348,99 @@ describe("AgentRunPolicy", () => {
       policy.authorizeToolCall("unknown_tool", "{}");
 
       expect(policy.planIteration(1)).toEqual(before);
+    });
+  });
+
+  describe("time and token budgets", () => {
+    function clockPolicy() {
+      let now = 1_000_000;
+      const policy = new AgentRunPolicy({ hasReferenceMaterial: false, now: () => now });
+      return { policy, advance: (ms: number) => (now += ms) };
+    }
+    const FORCED = { forceFinalAnswer: true, allowTools: false, finalAnswerHint: true };
+    const NOT_FORCED = {
+      forceFinalAnswer: false,
+      allowTools: true,
+      finalAnswerHint: false,
+      exceededBudget: null,
+    };
+
+    it("has the budgets chosen from the recorded runs", () => {
+      expect(RUN_TIME_BUDGET_MS).toBe(150_000);
+      expect(RUN_PROMPT_TOKEN_BUDGET).toBe(60_000);
+    });
+
+    it("forces an answer from the moment the time budget is reached", () => {
+      const { policy, advance } = clockPolicy();
+
+      advance(149_999);
+      expect(policy.planIteration(1)).toMatchObject(NOT_FORCED);
+
+      advance(1);
+      expect(policy.planIteration(1)).toMatchObject({ ...FORCED, exceededBudget: "time" });
+    });
+
+    it("measures time from when the run started, not from the previous call", () => {
+      const { policy, advance } = clockPolicy();
+
+      advance(100_000);
+      policy.planIteration(1);
+      advance(60_000);
+
+      expect(policy.planIteration(2).exceededBudget).toBe("time");
+    });
+
+    it("forces an answer from the moment the prompt tokens reach the budget", () => {
+      const { policy } = clockPolicy();
+
+      policy.recordModelUsage({ promptTokens: 59_999 });
+      expect(policy.planIteration(1)).toMatchObject(NOT_FORCED);
+
+      policy.recordModelUsage({ promptTokens: 1 });
+      expect(policy.planIteration(2)).toMatchObject({ ...FORCED, exceededBudget: "tokens" });
+    });
+
+    it.each<{ name: string; usage: { promptTokens: number | null } | null }>([
+      { name: "no usage at all", usage: null },
+      { name: "usage without a prompt token count", usage: { promptTokens: null } },
+    ])("stops using the token budget for the run after $name", ({ usage }) => {
+      const { policy, advance } = clockPolicy();
+      policy.recordModelUsage({ promptTokens: 50_000 });
+
+      policy.recordModelUsage(usage);
+      policy.recordModelUsage({ promptTokens: 500_000 });
+
+      expect(policy.planIteration(3)).toMatchObject(NOT_FORCED);
+      // 時間の予算は、usage がなくても使う。
+      advance(RUN_TIME_BUDGET_MS);
+      expect(policy.planIteration(3).exceededBudget).toBe("time");
+    });
+
+    it("reports the time budget when both are exceeded", () => {
+      const { policy, advance } = clockPolicy();
+      policy.recordModelUsage({ promptTokens: RUN_PROMPT_TOKEN_BUDGET });
+      advance(RUN_TIME_BUDGET_MS);
+
+      expect(policy.planIteration(1).exceededBudget).toBe("time");
+    });
+
+    it("does not report a budget on the last two calls, which are forced anyway", () => {
+      const { policy } = clockPolicy();
+
+      expect(policy.planIteration(8)).toMatchObject({
+        forceFinalAnswer: true,
+        allowTools: false,
+        exceededBudget: null,
+        finalAnswerHint: false,
+      });
+    });
+
+    it("does not change how tool calls are decided", () => {
+      const { policy, advance } = clockPolicy();
+      advance(RUN_TIME_BUDGET_MS);
+
+      // 予算を超えたあとはツールを渡さないので、ここへ来るのはループが捨てるはずの呼び出しだけ。
+      expect(policy.authorizeToolCall("moocs_navigate", NAVIGATE_ARGS)).toEqual({ allowed: true });
     });
   });
 

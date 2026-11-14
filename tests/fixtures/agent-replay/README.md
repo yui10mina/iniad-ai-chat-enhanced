@@ -20,6 +20,7 @@
 | `three-slides.json`          | スライドを 3 枚読んで回答する。3 枚とも予算に収まり、本文がすべて残る   |
 | `many-slides.json`           | 長いスライドを 6 枚読む。予算を超えた古い 2 枚は、題名と URL だけが残る |
 | `repeated-read.json`         | AI が同じスライドを繰り返し読む。2 回までは実行し、3 回目からは断る     |
+| `token-budget.json`          | 入力トークンの予算に達する。調査を打ち切り、読んだ分で回答する          |
 | `iteration-limit.json`       | AI が調べ続けて回答せず、反復の上限で終わる                             |
 | `truncated-answer.json`      | 回答が出力の上限で途中までになる                                        |
 | `failure-after-reading.json` | 資料を読んだあとで API が失敗する。読み終えた資料は保存に回される       |
@@ -28,7 +29,7 @@
 ## 台本の形
 
 - `pages`：URL ごとのページ。`slideText` は Google スライドの本文、`snapshot` は HTML ページの内容。
-- `llm`：AI の応答を呼び出しの順に並べたもの。`toolCalls`、`content`、`finishReason`、`httpError` を書ける。
+- `llm`：AI の応答を呼び出しの順に並べたもの。`toolCalls`、`content`、`finishReason`、`httpError`、`promptTokens` を書ける。
 - `expect`：実行結果の要約。テストはこれと丸ごと比べる。
 
 動きを意図して変えたときは、`expect` を新しい動きに合わせて書き換えます。その差分が、変更の前後で何が変わったかの記録になります。

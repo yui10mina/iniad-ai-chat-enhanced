@@ -111,6 +111,8 @@ export type AgentTraceEvent =
       toolCalls: number;
       answerChars: number;
       citations: number;
+      /** 時間かトークンの予算を超えて、調査を打ち切って回答させた場合の、超えた予算 */
+      exceededBudget?: "time" | "tokens";
     };
 
 /** `at` を除いたイベント。発行する側は時刻を付けない。 */
@@ -254,7 +256,7 @@ export const consoleTraceSink: AgentTraceSink = (event) => {
       break;
     case "run_end":
       console.log(
-        `[Agent] run end: ${event.reason}, ${event.durationMs} ms, iterations=${event.iterations}, tools=${event.toolCalls}`
+        `[Agent] run end: ${event.reason}, ${event.durationMs} ms, iterations=${event.iterations}, tools=${event.toolCalls}${event.exceededBudget ? `, budget=${event.exceededBudget}` : ""}`
       );
       break;
     default:
