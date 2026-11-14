@@ -67,6 +67,8 @@ export interface ToolExecutionContext {
    * ログイン結果を使わずに入り直す。
    */
   moocsLoginState?: { called: boolean; otherMoocsToolUsed?: boolean };
+  /** 同一チャット内で Google へのログインをもう試したか。スライドを読む前の自動ログインに使う。 */
+  googleLoginState?: { attempted: boolean };
   signal?: AbortSignal;
 }
 
@@ -101,7 +103,8 @@ export async function executeAgentTool(
     ctx.mcpClient,
     ctx.slidesIndex,
     ctx.slideReadCache,
-    ctx.signal
+    ctx.signal,
+    ctx.googleLoginState
   );
 
   try {
@@ -227,6 +230,8 @@ export async function executeAgentTool(
 
       case "moocs_google_login":
         return await runMoocsTool(ctx, async () => {
+          // モデルが自分でログインしたら、読み取り前の自動ログインは繰り返さない。
+          if (ctx.googleLoginState) ctx.googleLoginState.attempted = true;
           const result = await ctx.mcpClient.callToolSafe(
             "loginToGoogleWithIniadAccount",
             undefined,

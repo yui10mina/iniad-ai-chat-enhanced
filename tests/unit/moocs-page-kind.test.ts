@@ -23,6 +23,20 @@ describe("moocs-page-kind", () => {
         false
       );
     });
+
+    // 実際のコースには、講義回が数字 2 桁でないものがある（例: /vod01/01）。
+    it("classifies pages whose lecture id is not two digits", () => {
+      const base = "https://moocs.iniad.org/courses/2099/TEST101";
+      expect(getMoocsPageKind(`${base}/vod01/01`)).toBe("slide");
+      expect(isGoogleSlidePage(`${base}/vod01/02/`)).toBe(true);
+      expect(getMoocsPageKind(`${base}/vod01`)).toBe("lecture");
+      expect(getMoocsPageKind(`${base}/vod01/review`)).toBe("review");
+      expect(getMoocsPageKind(`${base}/vod01/exercise`)).toBe("exercise");
+      expect(getMoocsPageKind(base)).toBe("course");
+      // 資料の番号が数字 2 桁でないものは、スライドとは見なさない。
+      expect(getMoocsPageKind(`${base}/vod01/intro`)).toBe("other");
+      expect(getMoocsPageKind(`${base}/vod01/1`)).toBe("other");
+    });
   });
 
   describe("pageCitationTitle", () => {

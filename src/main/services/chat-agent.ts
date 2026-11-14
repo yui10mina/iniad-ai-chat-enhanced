@@ -215,6 +215,7 @@ export class ChatAgent {
     }
     const slideReadCache = new Map<string, string>();
     const moocsLoginState = { called: false };
+    const googleLoginState = { attempted: false };
     // ツール結果ごとの種類。文脈に本文を残す順を決めるのに使う。
     const toolResultMeta: ToolResultMetaMap = new WeakMap();
     let toolCallCount = 0;
@@ -330,6 +331,7 @@ export class ChatAgent {
               slidesIndex: this.slidesIndex,
               slideReadCache,
               moocsLoginState,
+              googleLoginState,
               signal,
             });
           }

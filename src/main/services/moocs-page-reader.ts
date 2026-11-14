@@ -50,7 +50,12 @@ export class MoocsPageReader {
     private mcpClient: McpClient,
     private slidesIndex?: SlidesIndexService,
     private slideReadCache?: Map<string, string>,
-    private signal?: AbortSignal
+    private signal?: AbortSignal,
+    /**
+     * 同じ質問の中で、Google へのログインをもう試したか。渡されたときだけ、スライドを
+     * 読む前に 1 回ログインする。INIAD のスライドは Google にログインしていないと 0 枚に見える。
+     */
+    private googleLoginState?: { attempted: boolean }
   ) {}
 
   async readPage(url?: string): Promise<MaterialToolExecutionResult> {
@@ -118,6 +123,7 @@ export class MoocsPageReader {
       }
     }
 
+    await this.loginToGoogleOnce();
     await withAbort(this.mcpClient.expandSlideTab(this.signal), this.signal);
     const extractResult = await withAbort(
       this.mcpClient.extractGoogleSlideText(this.signal),
@@ -190,6 +196,21 @@ export class MoocsPageReader {
       citations,
       outcome: toolFailure("content_unavailable"),
     };
+  }
+
+  /**
+   * スライドを読む前に、質問 1 件につき 1 回だけ Google にログインする。
+   * 失敗しても読み取りは続ける（スライドがなければログインは要らず、読めなければ HTML に切り替わる）。
+   */
+  private async loginToGoogleOnce(): Promise<void> {
+    const state = this.googleLoginState;
+    if (!state || state.attempted) return;
+    state.attempted = true;
+    try {
+      await withAbort(this.mcpClient.loginToGoogle(this.signal), this.signal);
+    } catch (error) {
+      if (this.signal?.aborted) throw error;
+    }
   }
 
   private async readHtmlMoocsPage(
