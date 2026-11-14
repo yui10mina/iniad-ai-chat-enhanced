@@ -6,7 +6,14 @@ import type { SearchResult } from "../../shared/types/search";
 import type { MaterialContextInput } from "./in-memory-store";
 import { MoocsPageReader, type MaterialToolExecutionResult } from "./moocs-page-reader";
 import { inferMoocsLocation } from "./moocs-page-kind";
-import { formatMcpResult, truncate, type ToolExecutionResult } from "./mcp-result";
+import {
+  TOOL_OK,
+  formatMcpResult,
+  toolFailure,
+  truncate,
+  type ToolExecutionResult,
+  type ToolFailureCode,
+} from "./mcp-result";
 
 const MAX_SNAPSHOT_CHARS = 3_000;
 const MAX_WEB_QUERY_CHARS = 500;
@@ -77,14 +84,14 @@ export async function executeAgentTool(
   try {
     const parsed = argsJson ? (JSON.parse(argsJson) as unknown) : {};
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { content: "Error: tool arguments must be a JSON object", citations: [] };
+      return failed("Error: tool arguments must be a JSON object", "invalid_arguments");
     }
     args = parsed as Record<string, unknown>;
   } catch {
-    return { content: "Error: tool arguments must be valid JSON", citations: [] };
+    return failed("Error: tool arguments must be valid JSON", "invalid_arguments");
   }
   const argumentError = validateAgentToolArguments(toolName, args);
-  if (argumentError) return { content: `Error: ${argumentError}`, citations: [] };
+  if (argumentError) return failed(`Error: ${argumentError}`, "invalid_arguments");
   if (ctx.moocsLoginState && toolName.startsWith("moocs_") && toolName !== "moocs_login") {
     ctx.moocsLoginState.otherMoocsToolUsed = true;
   }
@@ -124,7 +131,7 @@ export async function executeAgentTool(
       case "moocs_navigate": {
         const url = args.url as string;
         if (!isMoocsUrl(url)) {
-          return { content: "Error: url must be a moocs.iniad.org URL", citations: [] };
+          return failed("Error: url must be a moocs.iniad.org URL", "invalid_arguments");
         }
         return await runMoocsTool(ctx, async () => {
           await ctx.mcpClient.navigateTo(url, ctx.signal);
@@ -134,7 +141,7 @@ export async function executeAgentTool(
             snippet: "閲覧中のページ",
             sourceType: "moocs",
           });
-          return { content: `Navigated to ${url}`, citations };
+          return { content: `Navigated to ${url}`, citations, outcome: TOOL_OK };
         });
       }
 
@@ -163,7 +170,7 @@ export async function executeAgentTool(
       case "moocs_read_slide": {
         const slideUrl = args.url as string | undefined;
         if (slideUrl && !isMoocsUrl(slideUrl)) {
-          return { content: "Error: url must be a moocs.iniad.org URL", citations: [] };
+          return failed("Error: url must be a moocs.iniad.org URL", "invalid_arguments");
         }
         return await runMoocsTool(ctx, async () => pageReader.readPage(slideUrl));
       }
@@ -186,14 +193,14 @@ export async function executeAgentTool(
 
           const snapshot = await ctx.mcpClient.getPageSnapshot(ctx.signal);
           if (!snapshot) {
-            return { content: "Error: empty page snapshot", citations: [] };
+            return failed("Error: empty page snapshot", "content_unavailable");
           }
           const truncated =
             snapshot.length > MAX_SNAPSHOT_CHARS
               ? snapshot.slice(0, MAX_SNAPSHOT_CHARS) + "\n...(truncated)"
               : snapshot;
           const metadata = parseMoocsSnapshotMetadata(snapshot);
-          if (!metadata) return { content: truncated, citations };
+          if (!metadata) return { content: truncated, citations, outcome: TOOL_OK };
 
           const citation: Citation = {
             title: metadata.title,
@@ -205,6 +212,7 @@ export async function executeAgentTool(
           return {
             content: truncated,
             citations,
+            outcome: TOOL_OK,
             materials: [
               {
                 title: citation.title,
@@ -232,7 +240,7 @@ export async function executeAgentTool(
         const query = (args.query as string).trim();
         const result = await withAbort(ctx.webClient.search(query), ctx.signal);
         if (!result.success) {
-          return { content: `Web search failed: ${result.error ?? "unknown"}`, citations: [] };
+          return failed(`Web search failed: ${result.error ?? "unknown"}`, "web_search_failed");
         }
         const safeResults = result.results
           .slice(0, 5)
@@ -253,20 +261,29 @@ export async function executeAgentTool(
         // Search snippets are transient discovery metadata, not fetched source
         // documents. Keep their citations for the current answer, but do not
         // retain snippets as reusable material context for later conversations.
-        return { content, citations };
+        return {
+          content,
+          citations,
+          outcome: safeResults.length > 0 ? TOOL_OK : { ok: true, code: "no_results" },
+        };
       }
 
       default:
         if (BLOCKED_MCP_TOOLS.has(toolName)) {
-          return { content: `Error: tool "${toolName}" is not allowed`, citations: [] };
+          return failed(`Error: tool "${toolName}" is not allowed`, "blocked_tool");
         }
-        return { content: `Error: unknown tool "${toolName}"`, citations: [] };
+        return failed(`Error: unknown tool "${toolName}"`, "unknown_tool");
     }
   } catch (error) {
     if (ctx.signal?.aborted) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    return { content: `Tool error: ${message}`, citations: [] };
+    return failed(`Tool error: ${message}`, "exception");
   }
+}
+
+/** 引用のない失敗の結果。code には決まった値だけを入れ、エラー文は content にだけ残す。 */
+function failed(content: string, code: ToolFailureCode): AgentToolExecutionResult {
+  return { content, citations: [], outcome: toolFailure(code) };
 }
 
 function sanitizeWebSearchResult(result: SearchResult): SearchResult | null {
@@ -319,25 +336,25 @@ async function runMoocsTool(
   throwIfAborted(ctx.signal);
   // 都度ライブ状態を確認（チャット中の moocs_login 成功後など接続変化に追従）
   if (ctx.mcpClient.getStatus() !== "connected") {
-    return {
-      content:
-        "Error: MCP is not connected. Ask the user to configure MOOCs credentials and connect in Settings.",
-      citations: [],
-    };
+    return failed(
+      "Error: MCP is not connected. Ask the user to configure MOOCs credentials and connect in Settings.",
+      "mcp_not_connected"
+    );
   }
 
   const healthy = await withAbort(ctx.mcpClient.ping(ctx.signal), ctx.signal);
   if (!healthy) {
-    return {
-      content: "Error: MCP connection lost. Ask the user to reconnect in Settings.",
-      citations: [],
-    };
+    return failed(
+      "Error: MCP connection lost. Ask the user to reconnect in Settings.",
+      "mcp_connection_lost"
+    );
   }
 
   const result = await withAbort(fn(), ctx.signal);
   return {
     content: truncate(result.content),
     citations: result.citations,
+    outcome: result.outcome,
     materials: result.materials,
   };
 }

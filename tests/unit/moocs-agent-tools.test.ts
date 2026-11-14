@@ -251,6 +251,126 @@ describe("executeAgentTool", () => {
     ]);
   });
 
+  describe("outcome", () => {
+    const run = (toolName: string, argsJson: string, mcpClient: McpClient = createMcpMock()) =>
+      executeAgentTool(toolName, argsJson, { mcpClient, webClient, mcpConnected: true });
+
+    it("marks a successful MCP result as ok", async () => {
+      const result = await run("moocs_list_courses", "{}");
+
+      expect(result.outcome).toEqual({ ok: true, code: "ok" });
+    });
+
+    it("marks a successful navigation as ok", async () => {
+      const result = await run("moocs_navigate", '{"url":"https://moocs.iniad.org/courses"}');
+
+      expect(result.outcome).toEqual({ ok: true, code: "ok" });
+    });
+
+    it.each<{ name: string; toolName: string; argsJson: string }>([
+      { name: "arguments that are not JSON", toolName: "moocs_navigate", argsJson: '{"url":' },
+      { name: "arguments that are not an object", toolName: "moocs_navigate", argsJson: "[]" },
+      { name: "an unexpected argument", toolName: "moocs_list_courses", argsJson: '{"a":1}' },
+      {
+        name: "a URL outside MOOCs",
+        toolName: "moocs_navigate",
+        argsJson: '{"url":"https://moocs.iniad.org.evil.example/"}',
+      },
+      {
+        name: "a slide URL outside MOOCs",
+        toolName: "moocs_read_slide",
+        argsJson: '{"url":"https://example.com/slide"}',
+      },
+    ])("marks $name as invalid_arguments", async ({ toolName, argsJson }) => {
+      const mcpClient = createMcpMock();
+
+      const result = await run(toolName, argsJson, mcpClient);
+
+      expect(result.outcome).toEqual({ ok: false, code: "invalid_arguments" });
+      expect(mcpClient.navigateTo).not.toHaveBeenCalled();
+      expect(mcpClient.callToolSafe).not.toHaveBeenCalled();
+    });
+
+    it("tells an unknown tool from a blocked one", async () => {
+      expect((await run("moocs_delete_everything", "{}")).outcome).toEqual({
+        ok: false,
+        code: "unknown_tool",
+      });
+      expect((await run("submit_assignment", "{}")).outcome).toEqual({
+        ok: false,
+        code: "blocked_tool",
+      });
+    });
+
+    it("tells a missing MCP connection from a lost one", async () => {
+      const notConnected = createMcpMock({ getStatus: vi.fn().mockReturnValue("disconnected") });
+      const lost = createMcpMock({ ping: vi.fn().mockResolvedValue(false) });
+
+      expect((await run("moocs_list_courses", "{}", notConnected)).outcome).toEqual({
+        ok: false,
+        code: "mcp_not_connected",
+      });
+      expect((await run("moocs_list_courses", "{}", lost)).outcome).toEqual({
+        ok: false,
+        code: "mcp_connection_lost",
+      });
+    });
+
+    it("marks an MCP error result as mcp_error without putting its text in the code", async () => {
+      const mcpClient = createMcpMock({
+        callToolSafe: vi.fn().mockResolvedValue({
+          isError: true,
+          content: [{ type: "text", text: "session expired: secret-detail" }],
+        }),
+      });
+
+      const result = await run("moocs_list_courses", "{}", mcpClient);
+
+      expect(result.outcome).toEqual({ ok: false, code: "mcp_error" });
+      expect(result.content).toContain("session expired");
+    });
+
+    it("marks a thrown error as exception without putting its message in the code", async () => {
+      const mcpClient = createMcpMock({
+        callToolSafe: vi.fn().mockRejectedValue(new Error("boom: secret-detail")),
+      });
+
+      const result = await run("moocs_list_courses", "{}", mcpClient);
+
+      expect(result.outcome).toEqual({ ok: false, code: "exception" });
+      expect(result.content).toBe("Tool error: boom: secret-detail");
+    });
+
+    it("marks an empty page snapshot as content_unavailable", async () => {
+      const mcpClient = createMcpMock({ getPageSnapshot: vi.fn().mockResolvedValue("") });
+
+      const result = await run("moocs_page_content", "{}", mcpClient);
+
+      expect(result.outcome).toEqual({ ok: false, code: "content_unavailable" });
+    });
+
+    it("tells a failed web search from one with no results", async () => {
+      const search = vi
+        .fn()
+        .mockResolvedValueOnce({ success: false, results: [], error: "timeout" })
+        .mockResolvedValueOnce({ success: true, results: [] })
+        .mockResolvedValueOnce({
+          success: true,
+          results: [{ title: "Web", url: "https://example.com", snippet: "info", source: "web" }],
+        });
+      const searchWith = () =>
+        executeAgentTool("web_search", '{"query":"TCP"}', {
+          mcpClient: createMcpMock(),
+          webClient: { search },
+          mcpConnected: true,
+        });
+
+      expect((await searchWith()).outcome).toEqual({ ok: false, code: "web_search_failed" });
+      expect((await searchWith()).outcome).toEqual({ ok: true, code: "no_results" });
+      expect((await searchWith()).outcome).toEqual({ ok: true, code: "ok" });
+    });
+  });
+
   it("stops before tool execution when already cancelled", async () => {
     const controller = new AbortController();
     controller.abort();

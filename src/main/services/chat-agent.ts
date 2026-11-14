@@ -20,6 +20,7 @@ import { MOOCS_AGENT_TOOLS } from "./moocs-tool-definitions";
 import { executeAgentTool, type AgentToolExecutionResult } from "./moocs-tool-executor";
 import { prepareApiMessages, estimatePayloadChars } from "./agent-api-messages";
 import { apiRequestJson } from "./api-client";
+import { toolFailure } from "./mcp-result";
 
 const MAX_ITERATIONS = 10;
 export const MAX_AGENT_TOOL_CALLS = 12;
@@ -187,12 +188,14 @@ export class ChatAgent {
             toolResult = {
               content: `Error: total tool call limit (${MAX_AGENT_TOOL_CALLS}) reached`,
               citations: [],
+              outcome: toolFailure("tool_limit_reached"),
             };
           } else if (toolName === "web_search" && (!webSearchAllowed || mcpExplorationStarted)) {
             toolResult = {
               content:
                 "Error: web_search is unavailable after reference material or MCP output has been provided",
               citations: [],
+              outcome: toolFailure("web_search_blocked"),
             };
           } else {
             toolCallCount++;

@@ -119,6 +119,126 @@ describe("MoocsPageReader", () => {
     ]);
   });
 
+  describe("outcome", () => {
+    const READABLE =
+      "C言語は組込みシステムで標準的な言語であり、ポインタによってメモリを直接扱える。";
+    const extractReturning = (payload: unknown) =>
+      vi.fn().mockResolvedValue({
+        content: [
+          { type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) },
+        ],
+      });
+
+    it("marks readable slide text as ok and records it", async () => {
+      const reader = new MoocsPageReader(
+        createMcpMock({ extractGoogleSlideText: extractReturning({ text: READABLE }) })
+      );
+
+      const result = await reader.readPage(SLIDE_URL);
+
+      expect(result.outcome).toEqual({ ok: true, code: "ok" });
+      expect(result.materials).toHaveLength(1);
+    });
+
+    // 判定は content の文字列ではなく、抽出結果の error で決まる。
+    it("marks slide text that comes with an error as slide_extract_failed and does not record it", async () => {
+      const cache = new Map<string, string>();
+      const mcpClient = createMcpMock({
+        extractGoogleSlideText: extractReturning({ text: READABLE, error: "partial_extract" }),
+      });
+      const reader = new MoocsPageReader(mcpClient, undefined, cache);
+
+      const result = await reader.readPage(SLIDE_URL);
+
+      expect(result.outcome).toEqual({ ok: false, code: "slide_extract_failed" });
+      expect(result.materials).toBeUndefined();
+      expect(cache.has(SLIDE_URL)).toBe(false);
+    });
+
+    it("records slide text whose body merely starts with the word Error", async () => {
+      const text = `Error: という表示が出たときの対処を学ぶ。${READABLE}`;
+      const reader = new MoocsPageReader(
+        createMcpMock({ extractGoogleSlideText: extractReturning({ text }) })
+      );
+
+      const result = await reader.tryExtractSlideText([
+        { title: "Requested slide", url: SLIDE_URL, sourceType: "moocs" },
+      ]);
+
+      expect(result?.content.startsWith("Error:")).toBe(true);
+      expect(result?.outcome).toEqual({ ok: true, code: "ok" });
+      expect(result?.materials).toHaveLength(1);
+    });
+
+    it("applies the same rule to tryExtractSlideText", async () => {
+      const reader = new MoocsPageReader(
+        createMcpMock({
+          extractGoogleSlideText: extractReturning({
+            moocsUrl: SLIDE_URL,
+            text: READABLE,
+            error: "partial_extract",
+          }),
+        })
+      );
+
+      const result = await reader.tryExtractSlideText([]);
+
+      expect(result?.outcome).toEqual({ ok: false, code: "slide_extract_failed" });
+      expect(result?.materials).toBeUndefined();
+    });
+
+    it.each<{ name: string; payload: unknown; code: string }>([
+      {
+        name: "an extraction error without text",
+        payload: { error: "iframe_timeout", hint: "retry" },
+        code: "slide_extract_failed",
+      },
+      {
+        name: "text too short to be a slide",
+        payload: { text: "短い" },
+        code: "content_unavailable",
+      },
+      { name: "a result that is not JSON", payload: "not json", code: "content_unavailable" },
+      {
+        name: "a Google login wall",
+        payload: { error: "google_login_required" },
+        code: "google_login_required",
+      },
+    ])("marks $name as $code", async ({ payload, code }) => {
+      const reader = new MoocsPageReader(
+        createMcpMock({ extractGoogleSlideText: extractReturning(payload) })
+      );
+
+      const result = await reader.readPage(SLIDE_URL);
+
+      expect(result.outcome).toEqual({ ok: false, code });
+      expect(result.materials).toBeUndefined();
+    });
+
+    it("marks a private page as read but not published, also when it comes from the cache", async () => {
+      const cache = new Map<string, string>();
+      const reader = new MoocsPageReader(createMcpMock(), undefined, cache);
+
+      const first = await reader.readPage(REVIEW_URL);
+      const second = await reader.readPage(REVIEW_URL);
+
+      expect(first.outcome).toEqual({ ok: true, code: "not_published" });
+      expect(first.materials).toBeUndefined();
+      expect(second.outcome).toEqual({ ok: true, code: "not_published" });
+      expect(second.materials).toBeUndefined();
+    });
+
+    it("marks an empty HTML page as content_unavailable", async () => {
+      const reader = new MoocsPageReader(
+        createMcpMock({ getPageSnapshot: vi.fn().mockResolvedValue("") })
+      );
+
+      const result = await reader.readPage(REVIEW_URL);
+
+      expect(result.outcome).toEqual({ ok: false, code: "content_unavailable" });
+    });
+  });
+
   it("returns cached content on repeated read", async () => {
     const mcpClient = createMcpMock();
     const cache = new Map<string, string>();
