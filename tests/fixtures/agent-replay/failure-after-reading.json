@@ -1,0 +1,64 @@
+{
+  "name": "failure-after-reading",
+  "description": "スライドを 2 枚読んだあと、API が 500 を返して失敗する。回答は出ないが、読み終えた 2 枚は資料として保存に回されている。",
+  "question": "TEST101 の第1回の資料を2つ読んでください。",
+  "pages": {
+    "https://moocs.iniad.org/courses/2099/TEST101/01/01": {
+      "slideText": "合成スライド1。これは replay テスト用に書いた架空の本文で、実在の教材ではない。架空の用語アルファは入力を受け取る段階を指す。"
+    },
+    "https://moocs.iniad.org/courses/2099/TEST101/01/02": {
+      "slideText": "合成スライド2。これは replay テスト用に書いた架空の本文で、実在の教材ではない。架空の用語ベータは入力を変換する段階を指す。"
+    }
+  },
+  "llm": [
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_read_slide",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01/01"
+          }
+        },
+        {
+          "name": "moocs_read_slide",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01/02"
+          }
+        }
+      ]
+    },
+    {
+      "httpError": 500
+    }
+  ],
+  "expect": {
+    "outcome": "error",
+    "errorMessage": "APIサーバーで一時的な障害が発生しています（HTTP 500）",
+    "llmCalls": 2,
+    "tools": [
+      "moocs_read_slide /courses/2099/TEST101/01/01 -> ok",
+      "moocs_read_slide /courses/2099/TEST101/01/02 -> ok"
+    ],
+    "citations": [],
+    "materials": [
+      "https://moocs.iniad.org/courses/2099/TEST101/01/01",
+      "https://moocs.iniad.org/courses/2099/TEST101/01/02"
+    ],
+    "webSearches": 0,
+    "lastRequest": {
+      "toolsOffered": [
+        "moocs_login",
+        "moocs_list_courses",
+        "moocs_navigate",
+        "moocs_list_lectures",
+        "moocs_list_slides",
+        "moocs_read_slide",
+        "moocs_expand_slide_tab",
+        "moocs_page_content",
+        "moocs_google_login"
+      ],
+      "toolResults": ["kept", "kept"]
+    },
+    "toolResultsWrapped": true
+  }
+}

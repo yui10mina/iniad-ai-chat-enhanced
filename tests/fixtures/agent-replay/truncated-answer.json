@@ -1,0 +1,51 @@
+{
+  "name": "truncated-answer",
+  "description": "スライドを 1 枚読んだあと、回答が出力の上限で途中までになる。本文は書き換えず、途中で終わった印だけが付く。",
+  "question": "TEST101 の第1回の最初の資料を説明してください。",
+  "pages": {
+    "https://moocs.iniad.org/courses/2099/TEST101/01/01": {
+      "slideText": "合成スライド1。これは replay テスト用に書いた架空の本文で、実在の教材ではない。架空の用語アルファは入力を受け取る段階を指す。"
+    }
+  },
+  "llm": [
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_read_slide",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01/01"
+          }
+        }
+      ]
+    },
+    {
+      "content": "台本の回答: アルファは入力を受け取る段階で、次に",
+      "finishReason": "length"
+    }
+  ],
+  "expect": {
+    "outcome": "answer_incomplete",
+    "answer": "台本の回答: アルファは入力を受け取る段階で、次に",
+    "completion": "truncated",
+    "llmCalls": 2,
+    "tools": ["moocs_read_slide /courses/2099/TEST101/01/01 -> ok"],
+    "citations": ["https://moocs.iniad.org/courses/2099/TEST101/01/01"],
+    "materials": ["https://moocs.iniad.org/courses/2099/TEST101/01/01"],
+    "webSearches": 0,
+    "lastRequest": {
+      "toolsOffered": [
+        "moocs_login",
+        "moocs_list_courses",
+        "moocs_navigate",
+        "moocs_list_lectures",
+        "moocs_list_slides",
+        "moocs_read_slide",
+        "moocs_expand_slide_tab",
+        "moocs_page_content",
+        "moocs_google_login"
+      ],
+      "toolResults": ["kept"]
+    },
+    "toolResultsWrapped": true
+  }
+}
