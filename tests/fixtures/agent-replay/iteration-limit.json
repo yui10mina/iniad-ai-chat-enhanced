@@ -1,6 +1,6 @@
 {
   "name": "iteration-limit",
-  "description": "AI が毎回ちがうページを開き続け、回答しない。8 回までツールを実行し、9・10 回目はツールを渡さずに回答を求め、それでも回答が出ないので上限のエラーで終わる。",
+  "description": "AI が毎回ちがうページを開き続け、回答しない。8 回までツールを実行し、9・10 回目はツールを渡さずに回答を求め、それでも回答が出ないので上限のエラーで終わる。ページ移動の結果は短いので、8 件とも予算に収まって残る。",
   "question": "TEST101 を全部調べてください。",
   "pages": {},
   "llm": [
@@ -124,16 +124,7 @@
     "webSearches": 0,
     "lastRequest": {
       "toolsOffered": [],
-      "toolResults": [
-        "omitted",
-        "omitted",
-        "omitted",
-        "omitted",
-        "omitted",
-        "omitted",
-        "kept",
-        "kept"
-      ]
+      "toolResults": ["kept", "kept", "kept", "kept", "kept", "kept", "kept", "kept"]
     },
     "toolResultsWrapped": true
   }

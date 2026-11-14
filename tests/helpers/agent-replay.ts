@@ -81,6 +81,12 @@ const SETTINGS: AppSettings = {
 };
 
 const OMITTED_MARK = "[以前のツール結果は省略";
+const OMITTED_MATERIAL_HEADER = `${UNTRUSTED_REFERENCE_START} type=OMITTED_TOOL_RESULT\n`;
+
+/** 本文が省略されたツール結果か。資料の省略は、題名と URL を境界の中に残した形になる。 */
+function isOmitted(content: string): boolean {
+  return content.startsWith(OMITTED_MARK) || content.startsWith(OMITTED_MATERIAL_HEADER);
+}
 const TOOL_RESULT_HEADER = `${UNTRUSTED_REFERENCE_START} type=CURRENT_TOOL_RESULT\n`;
 
 function textResult(text: string) {
@@ -184,13 +190,13 @@ export async function runReplay(fixture: ReplayFixture): Promise<ReplayRun> {
     lastRequest: {
       toolsOffered: toolNames(lastRequest),
       toolResults: toolMessages(lastRequest).map((message) =>
-        String(message.content).startsWith(OMITTED_MARK) ? "omitted" : "kept"
+        isOmitted(String(message.content)) ? "omitted" : "kept"
       ),
     },
     toolResultsWrapped: llm.requests.every((request) =>
       toolMessages(request)
         .map((message) => String(message.content))
-        .filter((content) => !content.startsWith(OMITTED_MARK))
+        .filter((content) => !isOmitted(content))
         .every(isWrappedToolResult)
     ),
   };

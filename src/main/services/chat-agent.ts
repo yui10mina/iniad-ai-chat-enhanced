@@ -18,7 +18,11 @@ import type { MaterialContextInput, SelectedMaterialContext } from "./in-memory-
 import { MATERIAL_CONTEXT_LIMITS } from "./in-memory-store";
 import { MOOCS_AGENT_TOOLS } from "./moocs-tool-definitions";
 import { executeAgentTool, type AgentToolExecutionResult } from "./moocs-tool-executor";
-import { prepareApiMessages, estimatePayloadChars } from "./agent-api-messages";
+import {
+  prepareApiMessages,
+  estimatePayloadChars,
+  type ToolResultMetaMap,
+} from "./agent-api-messages";
 import { apiRequestJson } from "./api-client";
 import { toolFailure } from "./mcp-result";
 import { buildHistoryMessages } from "./agent-history";
@@ -211,6 +215,8 @@ export class ChatAgent {
     }
     const slideReadCache = new Map<string, string>();
     const moocsLoginState = { called: false };
+    // ツール結果ごとの種類。文脈に本文を残す順を決めるのに使う。
+    const toolResultMeta: ToolResultMetaMap = new WeakMap();
     let toolCallCount = 0;
     let toolSequence = 0;
     // Do not expose an outward web-search capability after untrusted prior/current
@@ -226,7 +232,7 @@ export class ChatAgent {
       const isLastIteration = iteration === MAX_ITERATIONS - 1;
       const forceFinalAnswer = iteration >= MAX_ITERATIONS - 2;
       const toolBudgetExhausted = toolCallCount >= MAX_AGENT_TOOL_CALLS;
-      const apiMessages = prepareApiMessages(messages);
+      const apiMessages = prepareApiMessages(messages, toolResultMeta);
       const allowTools = !forceFinalAnswer && !toolBudgetExhausted;
       const allowWebSearch = webSearchAllowed && !mcpExplorationStarted;
 
@@ -353,11 +359,16 @@ export class ChatAgent {
             }
           }
 
-          messages.push({
+          const toolMessage: AgentMessage = {
             role: "tool",
             tool_call_id: toolCall.id,
             content: wrapUntrustedReference(toolResult.content, "CURRENT_TOOL_RESULT"),
+          };
+          toolResultMeta.set(toolMessage, {
+            hasBody: Boolean(toolResult.materials?.length),
+            sources: (toolResult.materials ?? []).map(({ title, url }) => ({ title, url })),
           });
+          messages.push(toolMessage);
         }
 
         continue;

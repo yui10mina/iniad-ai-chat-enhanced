@@ -40,11 +40,12 @@ describe("agent replay (synthetic data; does not measure answer quality)", () =>
     vi.unstubAllGlobals();
   });
 
-  it("has the five scenarios", () => {
+  it("has the six scenarios", () => {
     expect(files).toEqual([
       "failure-after-reading.json",
       "injection-in-page.json",
       "iteration-limit.json",
+      "many-slides.json",
       "three-slides.json",
       "truncated-answer.json",
     ]);
@@ -90,16 +91,38 @@ describe("agent replay (synthetic data; does not measure answer quality)", () =>
     });
   });
 
-  // 文脈の予算化（計画の PR19）で変わる動き。変えたら three-slides.json の expect も書き換える。
-  it("loses the text of the first slide by the time it answers (today's behaviour)", async () => {
+  // 文脈の予算化（計画の PR19）で変わった動き。以前は 1 枚目の本文を失っていた。
+  it("still has the text of all three slides when it answers", async () => {
     const fixture = load("three-slides.json");
 
     const { requests } = await runReplay(fixture);
 
     const finalRequest = JSON.stringify(requests[requests.length - 1]);
-    expect(finalRequest).not.toContain("アルファ");
+    expect(finalRequest).toContain("アルファ");
     expect(finalRequest).toContain("ベータ");
     expect(finalRequest).toContain("ガンマ");
+  });
+
+  it("leaves the title and URL of the slides it could not keep", async () => {
+    const fixture = load("many-slides.json");
+
+    const { requests } = await runReplay(fixture);
+
+    const toolResults = requests[requests.length - 1].messages
+      .filter((message) => message.role === "tool")
+      .map((message) => String(message.content));
+    for (const [index, content] of toolResults.slice(0, 2).entries()) {
+      expect(content).toContain("type=OMITTED_TOOL_RESULT");
+      expect(content).toContain(
+        `URL: https://moocs.iniad.org/courses/2099/TEST101/02/0${index + 1}`
+      );
+      expect(content).toContain("Title: ");
+      expect(content).not.toContain(`架空の項目${index + 1}について`);
+    }
+    // 残した本文の合計は予算に収まっている。
+    const keptChars = toolResults.slice(2).reduce((sum, content) => sum + content.length, 0);
+    expect(keptChars).toBeLessThanOrEqual(12_000);
+    expect(keptChars).toBeGreaterThan(8_000);
   });
 
   it("keeps the injected text inside the boundary and never searches for it", async () => {
