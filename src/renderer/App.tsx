@@ -222,6 +222,8 @@ const App: React.FC = () => {
       if (wasCancelled) {
         setNotice({ type: "info", text: "回答の生成をキャンセルしました。" });
       } else {
+        // 失敗しても読み終えた資料は Main に残るので、件数の表示を合わせる。
+        await refreshMaterialContext();
         setNotice({ type: "error", text: `回答を生成できませんでした: ${errMsg}` });
       }
     } finally {
