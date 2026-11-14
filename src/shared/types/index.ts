@@ -5,6 +5,8 @@
 export type {
   ChatTurn,
   Citation,
+  ChatProgress,
+  ChatProgressTool,
   ChatResponse,
   ChatCompletionResponse,
   MaterialContextSummary,

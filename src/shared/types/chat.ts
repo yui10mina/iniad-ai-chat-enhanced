@@ -61,6 +61,41 @@ export interface ChatResponse {
   completion?: AnswerCompletion;
 }
 
+/** 進捗で見せるツールの種類。ツール名そのものではなく、画面の文に対応する値。 */
+export type ChatProgressTool =
+  | "login"
+  | "list_courses"
+  | "navigate"
+  | "list_lectures"
+  | "list_slides"
+  | "read_slide"
+  | "expand_slide_tab"
+  | "page_content"
+  | "google_login"
+  | "web_search"
+  | "other";
+
+/**
+ * 回答の生成中に Main から届く進捗（chat:progress）。
+ * URL、引数、本文は含まない。何をしているかの種類と番号だけを持つ。
+ */
+export type ChatProgress =
+  | {
+      kind: "thinking";
+      /** 何回目の AI への問い合わせか（1 始まり） */
+      iteration: number;
+      maxIterations: number;
+      /** ツールを使わず、集めた情報で回答をまとめる段階 */
+      final: boolean;
+    }
+  | {
+      kind: "tool";
+      iteration: number;
+      /** この質問で何件目のツール呼び出しか（1 始まり） */
+      sequence: number;
+      tool: ChatProgressTool;
+    };
+
 /** OpenAI 互換のツール定義 */
 export interface ChatToolDefinition {
   type: "function";

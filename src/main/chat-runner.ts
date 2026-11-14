@@ -32,11 +32,17 @@ export class ChatRunner {
     return this.activeController !== null;
   }
 
-  /** 質問を実行する。呼び出し側は、生成中でないことを先に確かめる。 */
-  async send(userText: string): Promise<ChatResponse> {
+  /**
+   * 質問を実行する。呼び出し側は、生成中でないことを先に確かめる。
+   * traceSinks は、この質問の間だけ使う記録先（質問を送ったウィンドウへの進捗など）。
+   */
+  async send(
+    userText: string,
+    options: { traceSinks?: readonly AgentTraceSink[] } = {}
+  ): Promise<ChatResponse> {
     const controller = new AbortController();
     this.activeController = controller;
-    const task = this.run(userText, controller);
+    const task = this.run(userText, controller, options.traceSinks ?? []);
     const completion = task.then(
       () => undefined,
       () => undefined
@@ -59,7 +65,11 @@ export class ChatRunner {
     if (completion) await waitAtMost(completion, 5_000);
   }
 
-  private async run(userText: string, controller: AbortController): Promise<ChatResponse> {
+  private async run(
+    userText: string,
+    controller: AbortController,
+    requestTraceSinks: readonly AgentTraceSink[]
+  ): Promise<ChatResponse> {
     const { store, chatAgent } = this.deps;
     const settings = this.deps.getSettings();
     const userMessage: ChatTurn = {
@@ -91,7 +101,7 @@ export class ChatRunner {
           onMaterialsRetrieved: (materials) => {
             retrievedMaterials.push(...materials);
           },
-          traceSinks: this.deps.traceSinks,
+          traceSinks: [...(this.deps.traceSinks ?? []), ...requestTraceSinks],
         }
       );
 
