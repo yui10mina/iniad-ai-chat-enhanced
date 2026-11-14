@@ -24,13 +24,14 @@ import {
   type ToolResultMetaMap,
 } from "./agent-api-messages";
 import { apiRequestJson } from "./api-client";
-import { toolFailure } from "./mcp-result";
+import { AgentRunPolicy, MAX_ITERATIONS } from "./agent-run-policy";
 import { buildHistoryMessages } from "./agent-history";
 import { mergeCitation } from "./citation-merge";
 import { buildPriorMaterialMessage } from "./material-prompt";
 import { wrapUntrustedReference } from "./untrusted-reference";
 
 // これまで chat-agent から公開していた名前。移動先から同じ名前で出し直す。
+export { MAX_AGENT_TOOL_CALLS } from "./agent-run-policy";
 export { UNTRUSTED_REFERENCE_END, UNTRUSTED_REFERENCE_START } from "./untrusted-reference";
 import {
   createTraceEmitter,
@@ -43,8 +44,6 @@ import {
   type AgentTraceSink,
 } from "./agent-trace";
 
-const MAX_ITERATIONS = 10;
-export const MAX_AGENT_TOOL_CALLS = 12;
 export interface ChatAgentContext {
   /** Main の資料ストアが質問との関連度で選択済みの本文。Renderer へは渡さない。 */
   priorMaterials?: readonly SelectedMaterialContext[];
@@ -218,24 +217,18 @@ export class ChatAgent {
     const googleLoginState = { attempted: false };
     // ツール結果ごとの種類。文脈に本文を残す順を決めるのに使う。
     const toolResultMeta: ToolResultMetaMap = new WeakMap();
-    let toolCallCount = 0;
     let toolSequence = 0;
-    // Do not expose an outward web-search capability after untrusted prior/current
-    // material has influenced the model. A single initial search may still be used
-    // for ordinary questions before any MCP browsing begins.
-    let webSearchAllowed = !syllabusHint && !context?.priorMaterials?.length;
-    let mcpExplorationStarted = false;
+    const policy = new AgentRunPolicy({
+      hasReferenceMaterial: Boolean(syllabusHint) || Boolean(context?.priorMaterials?.length),
+    });
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       if (signal?.aborted) {
         throw new Error("リクエストがキャンセルされました");
       }
 
-      const isLastIteration = iteration === MAX_ITERATIONS - 1;
-      const forceFinalAnswer = iteration >= MAX_ITERATIONS - 2;
-      const toolBudgetExhausted = toolCallCount >= MAX_AGENT_TOOL_CALLS;
+      const { forceFinalAnswer, toolBudgetExhausted, allowTools, allowWebSearch, finalAnswerHint } =
+        policy.planIteration(iteration);
       const apiMessages = prepareApiMessages(messages, toolResultMeta);
-      const allowTools = !forceFinalAnswer && !toolBudgetExhausted;
-      const allowWebSearch = webSearchAllowed && !mcpExplorationStarted;
 
       stats.iterations = iteration + 1;
       const llmStartedAt = Date.now();
@@ -254,7 +247,7 @@ export class ChatAgent {
       const response = await this.callApi(settings, apiMessages, signal, {
         allowTools,
         allowWebSearch,
-        finalAnswerHint: isLastIteration || toolBudgetExhausted,
+        finalAnswerHint,
       });
       const choice = response.choices?.[0];
       if (!choice) {
@@ -306,24 +299,12 @@ export class ChatAgent {
           });
 
           let toolResult: AgentToolExecutionResult;
-          if (toolCallCount >= MAX_AGENT_TOOL_CALLS) {
-            toolResult = {
-              content: `Error: total tool call limit (${MAX_AGENT_TOOL_CALLS}) reached`,
-              citations: [],
-              outcome: toolFailure("tool_limit_reached"),
-            };
-          } else if (toolName === "web_search" && (!webSearchAllowed || mcpExplorationStarted)) {
-            toolResult = {
-              content:
-                "Error: web_search is unavailable after reference material or MCP output has been provided",
-              citations: [],
-              outcome: toolFailure("web_search_blocked"),
-            };
+          // 可否は policy が決める。許可された時点で回数と Web 検索の状態が進む（実行の前）。
+          const decision = policy.authorizeToolCall(toolName, argsJson);
+          if (!decision.allowed) {
+            toolResult = { content: decision.content, citations: [], outcome: decision.outcome };
           } else {
-            toolCallCount++;
-            stats.toolCalls = toolCallCount;
-            if (toolName.startsWith("moocs_")) mcpExplorationStarted = true;
-            if (toolName === "web_search") webSearchAllowed = false;
+            stats.toolCalls = policy.executedToolCalls;
             toolResult = await executeAgentTool(toolName, argsJson, {
               mcpClient: this.mcpClient,
               webClient: this.webClient,
