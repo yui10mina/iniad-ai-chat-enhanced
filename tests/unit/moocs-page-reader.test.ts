@@ -336,6 +336,149 @@ describe("MoocsPageReader", () => {
     });
   });
 
+  describe("Google login before reading slides", () => {
+    const OTHER_SLIDE_URL = "https://moocs.iniad.org/courses/2026/COS201/01/02";
+
+    function order(mcpClient: McpClient): string[] {
+      const calls: Array<[string, number]> = [];
+      for (const name of [
+        "navigateTo",
+        "loginToGoogle",
+        "expandSlideTab",
+        "extractGoogleSlideText",
+      ] as const) {
+        const mock = vi.mocked(mcpClient[name] as (...args: unknown[]) => unknown).mock;
+        for (const callOrder of mock.invocationCallOrder) calls.push([name, callOrder]);
+      }
+      return calls.sort((a, b) => a[1] - b[1]).map(([name]) => name);
+    }
+
+    it("logs in once, after opening the page and before extracting", async () => {
+      const mcpClient = createMcpMock({ loginToGoogle: vi.fn().mockResolvedValue(undefined) });
+      const state = { attempted: false };
+      const reader = new MoocsPageReader(mcpClient, undefined, undefined, undefined, state);
+
+      await reader.readPage(SLIDE_URL);
+      await reader.readPage(OTHER_SLIDE_URL);
+
+      expect(order(mcpClient)).toEqual([
+        "navigateTo",
+        "loginToGoogle",
+        "expandSlideTab",
+        "extractGoogleSlideText",
+        "navigateTo",
+        "expandSlideTab",
+        "extractGoogleSlideText",
+      ]);
+      expect(state.attempted).toBe(true);
+    });
+
+    it("shares the single attempt between readers of the same question", async () => {
+      const mcpClient = createMcpMock({ loginToGoogle: vi.fn().mockResolvedValue(undefined) });
+      const state = { attempted: false };
+
+      await new MoocsPageReader(mcpClient, undefined, undefined, undefined, state).readPage(
+        SLIDE_URL
+      );
+      await new MoocsPageReader(mcpClient, undefined, undefined, undefined, state).readPage(
+        OTHER_SLIDE_URL
+      );
+
+      expect(mcpClient.loginToGoogle).toHaveBeenCalledTimes(1);
+    });
+
+    it("still reads the slide when the login fails, and does not try again", async () => {
+      const mcpClient = createMcpMock({
+        loginToGoogle: vi.fn().mockRejectedValue(new Error("Google login failed")),
+      });
+      const state = { attempted: false };
+      const reader = new MoocsPageReader(mcpClient, undefined, undefined, undefined, state);
+
+      const first = await reader.readPage(SLIDE_URL);
+      await reader.readPage(OTHER_SLIDE_URL);
+
+      // ログインに失敗しても、スライドの抽出まで進んで本文を返している。
+      expect(mcpClient.extractGoogleSlideText).toHaveBeenCalledTimes(2);
+      expect(first.content).toContain("C言語");
+      expect(mcpClient.loginToGoogle).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not log in when it was already attempted in this question", async () => {
+      const mcpClient = createMcpMock({ loginToGoogle: vi.fn().mockResolvedValue(undefined) });
+      const reader = new MoocsPageReader(mcpClient, undefined, undefined, undefined, {
+        attempted: true,
+      });
+
+      await reader.readPage(SLIDE_URL);
+
+      expect(mcpClient.loginToGoogle).not.toHaveBeenCalled();
+    });
+
+    it("does not log in when no state is given", async () => {
+      const mcpClient = createMcpMock({ loginToGoogle: vi.fn().mockResolvedValue(undefined) });
+
+      await new MoocsPageReader(mcpClient).readPage(SLIDE_URL);
+
+      expect(mcpClient.loginToGoogle).not.toHaveBeenCalled();
+    });
+
+    it("does not log in for an HTML page or for a slide found in the index", async () => {
+      const mcpClient = createMcpMock({ loginToGoogle: vi.fn().mockResolvedValue(undefined) });
+      const slidesIndex = {
+        isLoaded: vi.fn().mockReturnValue(true),
+        getEntryByMoocsUrl: vi.fn().mockReturnValue({
+          courseName: "合成コース",
+          lectureNum: "01",
+          slideNum: "01",
+          slideTitle: "合成スライド",
+          text: "indexed slide text",
+        }),
+      } as unknown as SlidesIndexService;
+      const state = { attempted: false };
+
+      await new MoocsPageReader(mcpClient, undefined, undefined, undefined, state).readPage(
+        REVIEW_URL
+      );
+      await new MoocsPageReader(mcpClient, slidesIndex, undefined, undefined, state).readPage(
+        SLIDE_URL
+      );
+
+      expect(mcpClient.loginToGoogle).not.toHaveBeenCalled();
+      expect(state.attempted).toBe(false);
+    });
+
+    it("stops when the question is cancelled during the login", async () => {
+      const controller = new AbortController();
+      const mcpClient = createMcpMock({
+        loginToGoogle: vi.fn(async () => {
+          controller.abort();
+          throw new Error("cancelled");
+        }),
+      });
+      const reader = new MoocsPageReader(mcpClient, undefined, undefined, controller.signal, {
+        attempted: false,
+      });
+
+      await expect(reader.readPage(SLIDE_URL)).rejects.toThrow();
+      expect(mcpClient.extractGoogleSlideText).not.toHaveBeenCalled();
+    });
+
+    it("reads a page with a lecture id like vod01 as slides", async () => {
+      const vodUrl = "https://moocs.iniad.org/courses/2099/TEST101/vod01/01";
+      const mcpClient = createMcpMock({ loginToGoogle: vi.fn().mockResolvedValue(undefined) });
+      const reader = new MoocsPageReader(mcpClient, undefined, undefined, undefined, {
+        attempted: false,
+      });
+
+      const result = await reader.readPage(vodUrl);
+
+      expect(mcpClient.extractGoogleSlideText).toHaveBeenCalledTimes(1);
+      expect(mcpClient.getPageSnapshot).not.toHaveBeenCalled();
+      expect(result.content).toContain("C言語");
+      expect(result.citations[0]).toMatchObject({ url: vodUrl, location: "vod01 / 資料1" });
+    });
+  });
+
   it("returns cached content on repeated read", async () => {
     const mcpClient = createMcpMock();
     const cache = new Map<string, string>();

@@ -13,8 +13,9 @@ export function getMoocsPageKind(url: string): MoocsPageKind {
   if (/\/atnd$/.test(path)) return "attendance";
   if (/\/exercise$/.test(path)) return "exercise";
   if (/\/review$/.test(path)) return "review";
-  if (/\/courses\/\d{4}\/[A-Z0-9]+\/\d{2}\/\d{2}$/.test(path)) return "slide";
-  if (/\/courses\/\d{4}\/[A-Z0-9]+\/\d{2}$/.test(path)) return "lecture";
+  // 講義回は数字 2 桁とは限らない（例: vod01）。資料の番号は数字 2 桁。
+  if (/\/courses\/\d{4}\/[A-Z0-9]+\/[A-Za-z0-9_-]+\/\d{2}$/.test(path)) return "slide";
+  if (/\/courses\/\d{4}\/[A-Z0-9]+\/[A-Za-z0-9_-]+$/.test(path)) return "lecture";
   if (/\/courses\/\d{4}\/[A-Z0-9]+$/.test(path)) return "course";
   return "other";
 }

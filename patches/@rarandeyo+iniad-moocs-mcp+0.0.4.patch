@@ -309,10 +309,10 @@ index 0000000..95751f1
 +exports.default = [extractGoogleSlideTextTool];
 diff --git a/node_modules/@rarandeyo/iniad-moocs-mcp/lib/tools/googleLogin.js b/node_modules/@rarandeyo/iniad-moocs-mcp/lib/tools/googleLogin.js
 new file mode 100644
-index 0000000..f98bcc6
+index 0000000..35dc7c1
 --- /dev/null
 +++ b/node_modules/@rarandeyo/iniad-moocs-mcp/lib/tools/googleLogin.js
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,102 @@
 +"use strict";
 +Object.defineProperty(exports, "__esModule", { value: true });
 +const zod_1 = require("zod");
@@ -358,7 +358,42 @@ index 0000000..f98bcc6
 +                await page.waitForTimeout(1500);
 +            }
 +            const passwordInput = page.locator('input[type="password"], input[name="Passwd"]');
-+            await passwordInput.waitFor({ state: 'visible', timeout: 10000 });
++            // INIAD の Google アカウントは SSO なので、メールアドレスのあとに Google のパスワード欄ではなく
++            // 「SSO アカウントの確認」ページが出ることがある。どの画面に進んだかを見てから続ける。
++            const LOGGED_IN_URL = /myaccount\.google\.com|mail\.google\.com|google\.com\/account/;
++            const SAML_CONFIRM_PATH = '/speedbump/samlconfirmaccount';
++            let stage = 'unknown';
++            const stageDeadline = Date.now() + 20000;
++            while (Date.now() < stageDeadline) {
++                const currentUrl = page.url();
++                if (LOGGED_IN_URL.test(currentUrl)) {
++                    stage = 'logged-in';
++                    break;
++                }
++                if (currentUrl.includes(SAML_CONFIRM_PATH)) {
++                    stage = 'saml-confirm';
++                    break;
++                }
++                if (await passwordInput.first().isVisible().catch(() => false)) {
++                    stage = 'password';
++                    break;
++                }
++                await page.waitForTimeout(500);
++            }
++            if (stage === 'logged-in') {
++                return { content: [{ type: 'text', text: 'Already logged in to Google.' }] };
++            }
++            if (stage === 'saml-confirm') {
++                // 確認ページの「続行」を押すと、SSO（MOOCs と同じ INIAD のログイン）へ進む。
++                // MOOCs にログイン済みなら、そのまま Google へ戻ってくる。
++                const continueBtn = page.getByRole('button', { name: /続行|Continue/ });
++                await continueBtn.first().click({ timeout: 10000 });
++                await page.waitForURL(LOGGED_IN_URL, { timeout: 30000 });
++                return { content: [{ type: 'text', text: 'Google login succeeded through INIAD SSO.' }] };
++            }
++            if (stage !== 'password') {
++                throw new Error('Google login page was not recognised.');
++            }
 +            await passwordInput.fill(password);
 +            const loginBtn = page.locator('button:has-text("次へ"), button:has-text("Next"), #passwordNext');
 +            await loginBtn.first().click();

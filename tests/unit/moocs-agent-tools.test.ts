@@ -371,6 +371,67 @@ describe("executeAgentTool", () => {
     });
   });
 
+  describe("Google login state", () => {
+    const SLIDE = "https://moocs.iniad.org/courses/2026/COS201/01/01";
+    const slideText = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            moocsUrl: SLIDE,
+            text: "C言語は組込みシステムで標準的な言語であり、ポインタによってメモリを直接扱える。",
+          }),
+        },
+      ],
+    };
+
+    it("logs in to Google before the first slide read of the question, once", async () => {
+      const mcpClient = createMcpMock({
+        loginToGoogle: vi.fn().mockResolvedValue(undefined),
+        extractGoogleSlideText: vi.fn().mockResolvedValue(slideText),
+      });
+      const ctx = {
+        mcpClient,
+        webClient,
+        mcpConnected: true,
+        googleLoginState: { attempted: false },
+      };
+
+      await executeAgentTool("moocs_read_slide", JSON.stringify({ url: SLIDE }), ctx);
+      await executeAgentTool(
+        "moocs_read_slide",
+        JSON.stringify({ url: SLIDE.replace("/01/01", "/01/02") }),
+        ctx
+      );
+
+      expect(mcpClient.loginToGoogle).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not log in again before a read when the model already called moocs_google_login", async () => {
+      const mcpClient = createMcpMock({
+        loginToGoogle: vi.fn().mockResolvedValue(undefined),
+        extractGoogleSlideText: vi.fn().mockResolvedValue(slideText),
+      });
+      const ctx = {
+        mcpClient,
+        webClient,
+        mcpConnected: true,
+        googleLoginState: { attempted: false },
+      };
+
+      await executeAgentTool("moocs_google_login", "{}", ctx);
+      await executeAgentTool("moocs_read_slide", JSON.stringify({ url: SLIDE }), ctx);
+
+      expect(mcpClient.callToolSafe).toHaveBeenCalledWith(
+        "loginToGoogleWithIniadAccount",
+        undefined,
+        90_000,
+        undefined
+      );
+      expect(mcpClient.loginToGoogle).not.toHaveBeenCalled();
+    });
+  });
+
   it("stops before tool execution when already cancelled", async () => {
     const controller = new AbortController();
     controller.abort();

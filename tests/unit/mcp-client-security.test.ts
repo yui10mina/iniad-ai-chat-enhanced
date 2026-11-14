@@ -964,3 +964,104 @@ describe("McpClient slide extraction outcomes", () => {
     await expect(client.extractGoogleSlideText()).resolves.toEqual(success);
   });
 });
+
+describe("McpClient Google login failure", () => {
+  beforeEach(resetSdkMocks);
+
+  const GOOGLE_LOGIN = "loginToGoogleWithIniadAccount";
+
+  async function connected() {
+    const client = new McpClient();
+    await client.connect("student", "password");
+    const listener = vi.fn();
+    client.onConnectionIssue(listener);
+    return { client, listener };
+  }
+
+  function failure(text: string) {
+    return { isError: true, content: [{ type: "text", text }] };
+  }
+
+  // 実アプリで起きた失敗の文。"login failed" を含むので、以前は MOOCs の認証失敗になっていた。
+  const TIMEOUT_TEXT = "Google login failed: locator.waitFor: Timeout 10000ms exceeded.";
+
+  it("reports a failed Google login without tearing the MOOCs connection down", async () => {
+    const { client, listener } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(failure(TIMEOUT_TEXT));
+
+    const error = await client.callToolSafe(GOOGLE_LOGIN).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(McpClientError);
+    expect(error).toMatchObject({
+      code: "MCP_CONNECTION_FAILED",
+      kind: "unknown",
+      retryable: false,
+      message: "Google へのログインを完了できませんでした。",
+    });
+    expect(client.getStatus()).toBe("connected");
+    expect(listener).not.toHaveBeenCalled();
+    expect(sdkMocks.clientClose).not.toHaveBeenCalled();
+    expect(sdkMocks.transportClose).not.toHaveBeenCalled();
+  });
+
+  it("can still use MOOCs tools after a failed Google login", async () => {
+    const { client } = await connected();
+    sdkMocks.callTool
+      .mockResolvedValueOnce(failure(TIMEOUT_TEXT))
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "slides" }] });
+
+    await expect(client.loginToGoogle()).rejects.toBeInstanceOf(McpClientError);
+
+    await expect(client.callToolSafe("listSlideLinks")).resolves.toEqual({
+      content: [{ type: "text", text: "slides" }],
+    });
+  });
+
+  it.each([
+    "Google login failed: unauthorized for student@iniad.org",
+    "Google login failed: page.goto: net::ERR_INTERNET_DISCONNECTED",
+    "Error: INIAD_USERNAME and INIAD_PASSWORD must be set.",
+  ])("keeps the connection and the raw text out of the error (%s)", async (text) => {
+    const { client, listener } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(failure(text));
+
+    const error = (await client.callToolSafe(GOOGLE_LOGIN).catch((e: unknown) => e)) as Error;
+
+    expect(error.message).toBe("Google へのログインを完了できませんでした。");
+    expect(JSON.stringify(error)).not.toContain("student@iniad.org");
+    expect(client.getStatus()).toBe("connected");
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("tells the user when Google asks for two-factor authentication", async () => {
+    const { client } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(
+      failure(
+        "Google login failed: Google 2FA required. Log in manually in Playwright profile (see README)."
+      )
+    );
+
+    await expect(client.callToolSafe(GOOGLE_LOGIN)).rejects.toMatchObject({
+      message: "Google の 2 段階認証が必要なため、ログインを完了できませんでした。",
+    });
+    expect(client.getStatus()).toBe("connected");
+  });
+
+  it("still treats a failed MOOCs login as an authentication failure", async () => {
+    const { client, listener } = await connected();
+    sdkMocks.callTool.mockResolvedValueOnce(failure("Login failed: unauthorized"));
+
+    await expect(client.loginToMoocs()).rejects.toMatchObject({ code: "MCP_AUTH_FAILED" });
+
+    expect(client.getStatus()).toBe("error");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a successful Google login as it is", async () => {
+    const { client } = await connected();
+    const success = { content: [{ type: "text", text: "Already logged in to Google." }] };
+    sdkMocks.callTool.mockResolvedValueOnce(success);
+
+    await expect(client.callToolSafe(GOOGLE_LOGIN)).resolves.toEqual(success);
+  });
+});

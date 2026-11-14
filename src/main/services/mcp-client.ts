@@ -669,7 +669,7 @@ export class McpClient {
       const slideOutcome =
         validated.name === "extractGoogleSlideText" ? knownSlideExtractOutcome(result) : null;
       if (slideOutcome) return slideOutcome;
-      this.handleToolResultIssue(result);
+      this.handleToolResultIssue(result, validated.name);
       return result;
     } catch (error) {
       if (signal?.aborted || isAbortError(error)) throw cancelledError();
@@ -1110,7 +1110,7 @@ export class McpClient {
     );
   }
 
-  private handleToolResultIssue(result: unknown): void {
+  private handleToolResultIssue(result: unknown, toolName: string): void {
     if (
       !result ||
       typeof result !== "object" ||
@@ -1119,6 +1119,11 @@ export class McpClient {
     ) {
       return;
     }
+
+    // Google へのログインは MOOCs への接続とは別のもの。失敗の文には "Google login failed"
+    // が入るので、下の分類に通すと MOOCs の認証失敗と見なされ、接続まで片付けてしまう。
+    // 接続の状態は変えず、Google ログインの失敗としてだけ知らせる。
+    if (toolName === GOOGLE_LOGIN_TOOL) throw googleLoginError(result);
 
     const content = "content" in result && Array.isArray(result.content) ? result.content : [];
     const text = content
@@ -1243,6 +1248,36 @@ function raceWithSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promise
 function isAbortError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.name === "AbortError" || (error as NodeJS.ErrnoException).code === "ABORT_ERR";
+}
+
+const GOOGLE_LOGIN_TOOL = "loginToGoogleWithIniadAccount";
+
+/**
+ * Google ログインの失敗を表すエラー。種類は "unknown"、再試行なしなので、
+ * callToolUnlocked は接続の状態を変えない。ツールの生のエラー文は載せない
+ * （メールアドレスなどが入り得る）。2 段階認証だけは、利用者が自分で対処できるので区別する。
+ */
+function googleLoginError(result: unknown): McpClientError {
+  const content =
+    result && typeof result === "object" && "content" in result && Array.isArray(result.content)
+      ? (result.content as unknown[])
+      : [];
+  const needsTwoFactor = content.some(
+    (item) =>
+      !!item &&
+      typeof item === "object" &&
+      typeof (item as { text?: unknown }).text === "string" &&
+      (item as { text: string }).text.includes("Google 2FA required")
+  );
+  return new McpClientError(
+    "MCP_CONNECTION_FAILED",
+    needsTwoFactor
+      ? "Google の 2 段階認証が必要なため、ログインを完了できませんでした。"
+      : "Google へのログインを完了できませんでした。",
+    "unknown",
+    "MOOCs への接続は保たれています。Google スライドの本文は読めない場合があります。",
+    false
+  );
 }
 
 /** スライド抽出ツールが、読み取りの結果として返すエラーの種類。 */
