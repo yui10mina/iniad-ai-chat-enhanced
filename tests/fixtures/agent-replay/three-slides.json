@@ -1,0 +1,87 @@
+{
+  "name": "three-slides",
+  "description": "スライドを 1 回の呼び出しにつき 1 枚ずつ、3 枚読んでから回答する。最後の API 呼び出しでは、直近 2 件より前のツール結果の本文が省略されている（今の動き。文脈の予算化で変わる）。",
+  "question": "TEST101 の第1回の内容を教えてください。",
+  "pages": {
+    "https://moocs.iniad.org/courses/2099/TEST101/01/01": {
+      "slideText": "合成スライド1。これは replay テスト用に書いた架空の本文で、実在の教材ではない。架空の用語アルファは入力を受け取る段階を指す。"
+    },
+    "https://moocs.iniad.org/courses/2099/TEST101/01/02": {
+      "slideText": "合成スライド2。これは replay テスト用に書いた架空の本文で、実在の教材ではない。架空の用語ベータは入力を変換する段階を指す。"
+    },
+    "https://moocs.iniad.org/courses/2099/TEST101/01/03": {
+      "slideText": "合成スライド3。これは replay テスト用に書いた架空の本文で、実在の教材ではない。架空の用語ガンマは結果を出力する段階を指す。"
+    }
+  },
+  "llm": [
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_read_slide",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01/01"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_read_slide",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01/02"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_read_slide",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01/03"
+          }
+        }
+      ]
+    },
+    {
+      "content": "台本の回答: アルファ、ベータ、ガンマの3段階です。"
+    }
+  ],
+  "expect": {
+    "outcome": "answered",
+    "answer": "台本の回答: アルファ、ベータ、ガンマの3段階です。",
+    "llmCalls": 4,
+    "tools": [
+      "moocs_read_slide /courses/2099/TEST101/01/01 -> ok",
+      "moocs_read_slide /courses/2099/TEST101/01/02 -> ok",
+      "moocs_read_slide /courses/2099/TEST101/01/03 -> ok"
+    ],
+    "citations": [
+      "https://moocs.iniad.org/courses/2099/TEST101/01/01",
+      "https://moocs.iniad.org/courses/2099/TEST101/01/02",
+      "https://moocs.iniad.org/courses/2099/TEST101/01/03"
+    ],
+    "materials": [
+      "https://moocs.iniad.org/courses/2099/TEST101/01/01",
+      "https://moocs.iniad.org/courses/2099/TEST101/01/02",
+      "https://moocs.iniad.org/courses/2099/TEST101/01/03"
+    ],
+    "webSearches": 0,
+    "lastRequest": {
+      "toolsOffered": [
+        "moocs_login",
+        "moocs_list_courses",
+        "moocs_navigate",
+        "moocs_list_lectures",
+        "moocs_list_slides",
+        "moocs_read_slide",
+        "moocs_expand_slide_tab",
+        "moocs_page_content",
+        "moocs_google_login"
+      ],
+      "toolResults": ["omitted", "kept", "kept"]
+    },
+    "toolResultsWrapped": true
+  }
+}

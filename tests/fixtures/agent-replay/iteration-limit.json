@@ -1,0 +1,140 @@
+{
+  "name": "iteration-limit",
+  "description": "AI が毎回ちがうページを開き続け、回答しない。8 回までツールを実行し、9・10 回目はツールを渡さずに回答を求め、それでも回答が出ないので上限のエラーで終わる。",
+  "question": "TEST101 を全部調べてください。",
+  "pages": {},
+  "llm": [
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/02"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/03"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/04"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/05"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/06"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/07"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/08"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/09"
+          }
+        }
+      ]
+    },
+    {
+      "toolCalls": [
+        {
+          "name": "moocs_navigate",
+          "args": {
+            "url": "https://moocs.iniad.org/courses/2099/TEST101/01"
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "outcome": "iteration_limit",
+    "errorMessage": "ツール呼び出しが 10 回を超えました。質問を分割して再度お試しください。",
+    "llmCalls": 10,
+    "tools": [
+      "moocs_navigate /courses/2099/TEST101/01 -> ok",
+      "moocs_navigate /courses/2099/TEST101/02 -> ok",
+      "moocs_navigate /courses/2099/TEST101/03 -> ok",
+      "moocs_navigate /courses/2099/TEST101/04 -> ok",
+      "moocs_navigate /courses/2099/TEST101/05 -> ok",
+      "moocs_navigate /courses/2099/TEST101/06 -> ok",
+      "moocs_navigate /courses/2099/TEST101/07 -> ok",
+      "moocs_navigate /courses/2099/TEST101/08 -> ok"
+    ],
+    "citations": [],
+    "materials": [],
+    "webSearches": 0,
+    "lastRequest": {
+      "toolsOffered": [],
+      "toolResults": [
+        "omitted",
+        "omitted",
+        "omitted",
+        "omitted",
+        "omitted",
+        "omitted",
+        "kept",
+        "kept"
+      ]
+    },
+    "toolResultsWrapped": true
+  }
+}

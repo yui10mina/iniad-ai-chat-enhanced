@@ -31,6 +31,8 @@ export interface FakeReply {
   toolCalls?: FakeToolCall[];
   /** 省略すると tool_calls か stop。null のときは finish_reason を応答に入れない。 */
   finishReason?: string | null;
+  /** この回の呼び出しを、この HTTP ステータスの失敗にする。 */
+  httpError?: number;
   /** 応答に付ける usage。省略すると usage のない応答になる。 */
   usage?: Record<string, unknown>;
 }
@@ -50,7 +52,17 @@ export function installFakeLlm(reply: (index: number, request: SentRequest) => F
     const request = JSON.parse(String(init?.body)) as SentRequest;
     const index = requests.length;
     requests.push(request);
-    const { content = null, toolCalls, finishReason, usage } = reply(index, request);
+    const { content = null, toolCalls, finishReason, usage, httpError } = reply(index, request);
+    if (httpError !== undefined) {
+      return {
+        ok: false,
+        status: httpError,
+        headers: new Headers(),
+        body: null,
+        text: async () => "",
+        json: async () => ({}),
+      };
+    }
     return {
       ok: true,
       status: 200,
