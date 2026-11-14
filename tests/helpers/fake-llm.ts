@@ -31,6 +31,8 @@ export interface FakeReply {
   toolCalls?: FakeToolCall[];
   /** 省略すると tool_calls か stop。null のときは finish_reason を応答に入れない。 */
   finishReason?: string | null;
+  /** 応答に付ける usage。省略すると usage のない応答になる。 */
+  usage?: Record<string, unknown>;
 }
 
 export interface FakeLlm {
@@ -48,7 +50,7 @@ export function installFakeLlm(reply: (index: number, request: SentRequest) => F
     const request = JSON.parse(String(init?.body)) as SentRequest;
     const index = requests.length;
     requests.push(request);
-    const { content = null, toolCalls, finishReason } = reply(index, request);
+    const { content = null, toolCalls, finishReason, usage } = reply(index, request);
     return {
       ok: true,
       status: 200,
@@ -74,6 +76,7 @@ export function installFakeLlm(reply: (index: number, request: SentRequest) => F
               : { finish_reason: finishReason ?? (toolCalls ? "tool_calls" : "stop") }),
           },
         ],
+        ...(usage ? { usage } : {}),
       }),
     };
   });
