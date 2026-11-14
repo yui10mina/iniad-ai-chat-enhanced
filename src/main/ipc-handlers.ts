@@ -12,6 +12,7 @@ import {
   validateMcpCredentialTestInput,
   validateSettingsInput,
 } from "./ipc-validation";
+import { createProgressSink } from "./chat-progress";
 import { ChatRunner, waitAtMost } from "./chat-runner";
 import { consoleTraceSink } from "./services/agent-trace";
 import { createAppServices } from "./services/app-services";
@@ -112,7 +113,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     handleMcpConnectionIssue(error);
   });
 
-  secureHandle("chat:send", options, async (_event, rawText) => {
+  secureHandle("chat:send", options, async (event, rawText) => {
     const userText = validateChatInput(rawText);
     if (chatRunner.isRunning) {
       throw new AppError("INVALID_INPUT", "別の回答を生成中です");
@@ -121,7 +122,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
       throw new AppError("INVALID_INPUT", "MOOCs の接続テスト中です。終わってから送信してください");
     }
 
-    return chatRunner.send(userText);
+    // 進捗は、質問を送ってきたウィンドウだけへ送る。
+    return chatRunner.send(userText, { traceSinks: [createProgressSink(event.sender)] });
   });
 
   secureNoArg("chat:cancel", options, async () => {

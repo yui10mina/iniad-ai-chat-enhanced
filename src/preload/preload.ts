@@ -7,6 +7,7 @@
  */
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ChatProgress,
   ChatResponse,
   ChatTurn,
   PublicAppSettings,
@@ -65,6 +66,16 @@ const api = {
   openExternalUrl: (url: string): Promise<boolean> => ipcRenderer.invoke("external:open", url),
 
   // ── イベントリスナ（Main→Renderer へのプッシュ通知） ──
+  /** 回答の生成中の進捗を監視する（cleanup 関数を返す） */
+  onChatProgress: (callback: (progress: ChatProgress) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, progress: ChatProgress) =>
+      callback(progress);
+    ipcRenderer.on("chat:progress", handler);
+    return () => {
+      ipcRenderer.removeListener("chat:progress", handler);
+    };
+  },
+
   /** MCP 接続状態の変更を監視する（cleanup 関数を返す） */
   onMcpStatusChange: (callback: (status: McpConnectionState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: McpConnectionState) =>

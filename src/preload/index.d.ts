@@ -6,6 +6,7 @@
  * Renderer 側で window.electronAPI を使うと自動的に型補完が効く。
  */
 import type {
+  ChatProgress,
   ChatResponse,
   ChatTurn,
   PublicAppSettings,
@@ -40,6 +41,7 @@ export interface ElectronAPI {
   openExternalUrl: (url: string) => Promise<boolean>;
 
   // ── イベントリスナ ──
+  onChatProgress: (callback: (progress: ChatProgress) => void) => () => void;
   onMcpStatusChange: (callback: (status: McpConnectionState) => void) => () => void;
 }
 

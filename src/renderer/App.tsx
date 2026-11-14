@@ -5,7 +5,7 @@ import { StatusBar } from "./components/StatusBar";
 import { SettingsView } from "./components/SettingsView";
 import { completionNoticeText } from "./completion-notice";
 import { toAssistantTurn } from "../shared/utils/assistant-turn";
-import type { ChatTurn, MaterialContextSummary } from "../shared/types/chat";
+import type { ChatProgress, ChatTurn, MaterialContextSummary } from "../shared/types/chat";
 import { CHAT_MODEL, type McpConnectionState } from "../shared/types/settings";
 import "./index.css";
 
@@ -34,6 +34,7 @@ const App: React.FC = () => {
   const [materialContext, setMaterialContext] = useState<MaterialContextSummary[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [progress, setProgress] = useState<ChatProgress | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [mcpConnection, setMcpConnection] = useState<McpConnectionState>(INITIAL_MCP_CONNECTION);
@@ -78,6 +79,8 @@ const App: React.FC = () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isDataMenuOpen]);
+
+  useEffect(() => window.electronAPI.onChatProgress(setProgress), []);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
@@ -192,6 +195,7 @@ const App: React.FC = () => {
     };
     setMessages((prev) => [...prev, newUserMsg]);
     setNotice(null);
+    setProgress(null);
     setIsLoading(true);
     setIsCancelling(false);
     cancelRequestedRef.current = false;
@@ -230,6 +234,7 @@ const App: React.FC = () => {
       cancelRequestedRef.current = false;
       setIsCancelling(false);
       setIsLoading(false);
+      setProgress(null);
     }
   };
 
@@ -510,7 +515,7 @@ const App: React.FC = () => {
       <div className="views-container">
         <div className={`view-layer ${isChat ? "view-active" : "view-hidden"}`}>
           <main className="app-main">
-            <ChatView messages={messages} isLoading={isLoading} />
+            <ChatView messages={messages} isLoading={isLoading} progress={progress} />
           </main>
           <ChatInput
             key={inputResetToken}

@@ -28,6 +28,7 @@ const fakes = vi.hoisted(() => ({
   onConnectionIssue: vi.fn(),
   testMcpCredentials: vi.fn(),
   store: undefined as unknown,
+  windows: [] as unknown[],
 }));
 
 vi.mock("electron", () => ({
@@ -36,7 +37,7 @@ vi.mock("electron", () => ({
       fakes.handlers.set(channel, handler);
     },
   },
-  BrowserWindow: { getAllWindows: () => [] },
+  BrowserWindow: { getAllWindows: () => fakes.windows },
   shell: { openExternal: vi.fn() },
 }));
 
@@ -176,6 +177,7 @@ let ipc: typeof import("../../src/main/ipc-handlers");
 beforeEach(async () => {
   vi.resetModules();
   fakes.handlers.clear();
+  fakes.windows = [];
   fakes.chat.mockReset();
   fakes.disconnect.mockReset().mockResolvedValue(undefined);
   fakes.onConnectionIssue.mockReset().mockReturnValue(() => undefined);
@@ -405,6 +407,84 @@ describe("IPC handlers (current behaviour)", () => {
       first.resolve(ANSWER);
       await running;
       await expect(invoke("chat:send", "3問目")).resolves.toEqual(ANSWER);
+    });
+  });
+
+  describe("progress", () => {
+    const LLM_START = {
+      type: "llm_start",
+      at: 1,
+      iteration: 1,
+      maxIterations: 10,
+      messageCount: 2,
+      payloadChars: 900,
+      toolsOffered: true,
+      webSearchOffered: true,
+      forcedFinal: false,
+    } as const;
+
+    /** 進捗を受け取れる送信元。send の呼び出しを記録する。 */
+    function senderEvent() {
+      const mainFrame = { name: "main" };
+      const sender = {
+        id: TRUSTED_ID,
+        mainFrame,
+        isDestroyed: vi.fn().mockReturnValue(false),
+        send: vi.fn(),
+      };
+      return { sender, event: { sender, senderFrame: mainFrame } };
+    }
+
+    function otherWindow() {
+      const webContents = { isDestroyed: () => false, send: vi.fn() };
+      fakes.windows = [{ isDestroyed: () => false, webContents }];
+      return webContents;
+    }
+
+    it("sends progress only to the window that asked, not to every window", async () => {
+      const other = otherWindow();
+      const { sender, event } = senderEvent();
+      fakes.chat.mockImplementation(async (...args: Parameters<ChatFn>) => {
+        for (const sink of args[4].traceSinks ?? []) sink(LLM_START);
+        return ANSWER;
+      });
+
+      await expect(invokeAs(event, "chat:send", "質問")).resolves.toEqual(ANSWER);
+
+      expect(sender.send.mock.calls).toEqual([
+        ["chat:progress", { kind: "thinking", iteration: 1, maxIterations: 10, final: false }],
+      ]);
+      expect(other.send).not.toHaveBeenCalled();
+    });
+
+    it("stops sending progress when the window is closed during the run", async () => {
+      const { sender, event } = senderEvent();
+      fakes.chat.mockImplementation(async (...args: Parameters<ChatFn>) => {
+        const sinks = args[4].traceSinks ?? [];
+        for (const sink of sinks) sink(LLM_START);
+        sender.isDestroyed.mockReturnValue(true);
+        for (const sink of sinks) sink({ ...LLM_START, iteration: 2 });
+        return ANSWER;
+      });
+
+      await invokeAs(event, "chat:send", "質問");
+
+      expect(sender.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not carry one question's progress target over to the next question", async () => {
+      const first = senderEvent();
+      const second = senderEvent();
+      fakes.chat.mockImplementation(async (...args: Parameters<ChatFn>) => {
+        for (const sink of args[4].traceSinks ?? []) sink(LLM_START);
+        return ANSWER;
+      });
+
+      await invokeAs(first.event, "chat:send", "1問目");
+      await invokeAs(second.event, "chat:send", "2問目");
+
+      expect(first.sender.send).toHaveBeenCalledTimes(1);
+      expect(second.sender.send).toHaveBeenCalledTimes(1);
     });
   });
 

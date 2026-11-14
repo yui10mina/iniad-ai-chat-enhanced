@@ -1,13 +1,16 @@
 import React, { useRef, useEffect } from "react";
-import { ChatTurn } from "../../shared/types/chat";
+import type { ChatProgress, ChatTurn } from "../../shared/types/chat";
+import { chatProgressLabel } from "../chat-progress-label";
 import { MessageBubble } from "./MessageBubble";
 
 interface ChatViewProps {
   messages: ChatTurn[];
   isLoading?: boolean;
+  /** 回答の生成中に Main から届いた最新の進捗 */
+  progress?: ChatProgress | null;
 }
 
-export const ChatView: React.FC<ChatViewProps> = ({ messages, isLoading }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ messages, isLoading, progress }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -50,6 +53,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ messages, isLoading }) => {
               <span className="thinking-dot"></span>
               <span className="thinking-dot"></span>
               <span className="thinking-dot"></span>
+            </div>
+            <div className="thinking-status" role="status" aria-live="polite">
+              {chatProgressLabel(progress)}
             </div>
           </div>
         </div>
