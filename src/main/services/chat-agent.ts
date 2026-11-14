@@ -21,6 +21,16 @@ import { executeAgentTool, type AgentToolExecutionResult } from "./moocs-tool-ex
 import { prepareApiMessages, estimatePayloadChars } from "./agent-api-messages";
 import { apiRequestJson } from "./api-client";
 import { toolFailure } from "./mcp-result";
+import {
+  createTraceEmitter,
+  traceError,
+  traceFinishReason,
+  traceToolArgs,
+  traceToolName,
+  traceUsage,
+  type AgentTraceEmitter,
+  type AgentTraceSink,
+} from "./agent-trace";
 
 const MAX_ITERATIONS = 10;
 export const MAX_AGENT_TOOL_CALLS = 12;
@@ -43,7 +53,21 @@ export interface ChatAgentContext {
   priorMaterials?: readonly SelectedMaterialContext[];
   /** 現在のツール実行で実本文を取得した場合だけ呼ばれる。 */
   onMaterialsRetrieved?: (materials: readonly MaterialContextInput[]) => void;
+  /** 実行の記録を受け取る先。本文や検索語は渡らない（agent-trace.ts）。 */
+  traceSinks?: readonly AgentTraceSink[];
 }
+
+/** run_end に載せる、実行の途中経過。 */
+interface RunStats {
+  iterations: number;
+  toolCalls: number;
+  limitReached: boolean;
+  emptyAnswer: boolean;
+}
+
+const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set(
+  MOOCS_AGENT_TOOLS.map((tool) => tool.function.name)
+);
 
 const AGENT_SYSTEM_PROMPT = `あなたは INIAD MOOCs の学習アシスタントです。
 ユーザーの質問に答えるために、提供されたツールを使って MOOCs を能動的に調べてください。
@@ -85,12 +109,77 @@ export class ChatAgent {
     context?: ChatAgentContext
   ): Promise<ChatResponse> {
     const startTime = Date.now();
+    const trace = createTraceEmitter(context?.traceSinks);
+    const stats: RunStats = {
+      iterations: 0,
+      toolCalls: 0,
+      limitReached: false,
+      emptyAnswer: false,
+    };
+
+    // 成功、上限、失敗、キャンセルのどの終わり方でも run_end を 1 回だけ出す。
+    try {
+      const response = await this.runLoop(
+        userText,
+        settings,
+        signal,
+        history,
+        context,
+        trace,
+        stats,
+        startTime
+      );
+      trace({
+        type: "run_end",
+        durationMs: Date.now() - startTime,
+        reason: response.completion ? "answer_incomplete" : "answered",
+        iterations: stats.iterations,
+        toolCalls: stats.toolCalls,
+        answerChars: response.content.length,
+        citations: response.citations.length,
+      });
+      return response;
+    } catch (error) {
+      const reason = signal?.aborted
+        ? "cancelled"
+        : stats.limitReached
+          ? "iteration_limit"
+          : "error";
+      trace({
+        type: "run_end",
+        durationMs: Date.now() - startTime,
+        reason,
+        ...(reason === "error" ? traceError(error, stats.emptyAnswer) : {}),
+        iterations: stats.iterations,
+        toolCalls: stats.toolCalls,
+        answerChars: 0,
+        citations: 0,
+      });
+      throw error;
+    }
+  }
+
+  private async runLoop(
+    userText: string,
+    settings: AppSettings,
+    signal: AbortSignal | undefined,
+    history: ChatTurn[] | undefined,
+    context: ChatAgentContext | undefined,
+    trace: AgentTraceEmitter,
+    stats: RunStats,
+    startTime: number
+  ): Promise<ChatResponse> {
+    const syllabusHint = this.buildSyllabusHint(userText);
+    trace({
+      type: "run_start",
+      historyTurns: history?.length ?? 0,
+      priorMaterials: context?.priorMaterials?.length ?? 0,
+      hasSyllabusHint: Boolean(syllabusHint),
+    });
 
     if (!settings.apiKey) {
       throw new Error("API キーが設定されていません。設定画面から入力してください。");
     }
-
-    const syllabusHint = this.buildSyllabusHint(userText);
 
     const messages: AgentMessage[] = [{ role: "system", content: AGENT_SYSTEM_PROMPT }];
 
@@ -130,6 +219,7 @@ export class ChatAgent {
     const slideReadCache = new Map<string, string>();
     const moocsLoginState = { called: false };
     let toolCallCount = 0;
+    let toolSequence = 0;
     // Do not expose an outward web-search capability after untrusted prior/current
     // material has influenced the model. A single initial search may still be used
     // for ordinary questions before any MCP browsing begins.
@@ -144,14 +234,26 @@ export class ChatAgent {
       const forceFinalAnswer = iteration >= MAX_ITERATIONS - 2;
       const toolBudgetExhausted = toolCallCount >= MAX_AGENT_TOOL_CALLS;
       const apiMessages = prepareApiMessages(messages);
+      const allowTools = !forceFinalAnswer && !toolBudgetExhausted;
+      const allowWebSearch = webSearchAllowed && !mcpExplorationStarted;
 
-      console.log(
-        `[Agent] iteration ${iteration + 1}/${MAX_ITERATIONS}, messages=${messages.length}, payload~${estimatePayloadChars(apiMessages)} chars, forceFinal=${forceFinalAnswer}`
-      );
+      stats.iterations = iteration + 1;
+      const llmStartedAt = Date.now();
+      // LLM は最大 120 秒待つので、待ち始めたことを先に知らせる。
+      trace({
+        type: "llm_start",
+        iteration: iteration + 1,
+        maxIterations: MAX_ITERATIONS,
+        messageCount: messages.length,
+        payloadChars: estimatePayloadChars(apiMessages),
+        toolsOffered: allowTools,
+        webSearchOffered: allowTools && allowWebSearch,
+        forcedFinal: forceFinalAnswer,
+      });
 
       const response = await this.callApi(settings, apiMessages, signal, {
-        allowTools: !forceFinalAnswer && !toolBudgetExhausted,
-        allowWebSearch: webSearchAllowed && !mcpExplorationStarted,
+        allowTools,
+        allowWebSearch,
         finalAnswerHint: isLastIteration || toolBudgetExhausted,
       });
       const choice = response.choices?.[0];
@@ -161,6 +263,16 @@ export class ChatAgent {
 
       const assistantMsg = choice.message;
       const toolCalls = assistantMsg.tool_calls ?? [];
+      trace({
+        type: "llm_end",
+        iteration: iteration + 1,
+        durationMs: Date.now() - llmStartedAt,
+        finishReason: traceFinishReason(choice.finish_reason),
+        usage: traceUsage(response.usage),
+        toolCalls: toolCalls.length,
+        toolCallsDiscarded: toolCalls.length > 0 && (forceFinalAnswer || toolBudgetExhausted),
+        contentChars: assistantMsg.content?.length ?? 0,
+      });
 
       if (toolCalls.length > 0) {
         if (forceFinalAnswer || toolBudgetExhausted) {
@@ -181,7 +293,17 @@ export class ChatAgent {
         for (const toolCall of toolCalls) {
           const toolName = toolCall.function.name;
           const argsJson = toolCall.function.arguments ?? "{}";
-          console.log(`[Agent] tool: ${toolName}`);
+          const sequence = ++toolSequence;
+          const tracedTool = traceToolName(toolName, KNOWN_TOOL_NAMES);
+          const toolStartedAt = Date.now();
+          // ツールは 45〜90 秒待つことがあるので、開始も知らせる。引数は許可した項目だけ。
+          trace({
+            type: "tool_start",
+            iteration: iteration + 1,
+            sequence,
+            tool: tracedTool,
+            args: traceToolArgs(argsJson),
+          });
 
           let toolResult: AgentToolExecutionResult;
           if (toolCallCount >= MAX_AGENT_TOOL_CALLS) {
@@ -199,6 +321,7 @@ export class ChatAgent {
             };
           } else {
             toolCallCount++;
+            stats.toolCalls = toolCallCount;
             if (toolName.startsWith("moocs_")) mcpExplorationStarted = true;
             if (toolName === "web_search") webSearchAllowed = false;
             toolResult = await executeAgentTool(toolName, argsJson, {
@@ -211,6 +334,17 @@ export class ChatAgent {
               signal,
             });
           }
+          trace({
+            type: "tool_end",
+            iteration: iteration + 1,
+            sequence,
+            tool: tracedTool,
+            durationMs: Date.now() - toolStartedAt,
+            outcome: toolResult.outcome,
+            resultChars: toolResult.content.length,
+            citations: toolResult.citations.length,
+            materials: toolResult.materials?.length ?? 0,
+          });
 
           if (toolResult.materials?.length) {
             // Navigation/listing results help exploration, but are not evidence
@@ -239,6 +373,7 @@ export class ChatAgent {
       const content = assistantMsg.content?.trim() ?? "";
       const completion = completionFromFinishReason(choice.finish_reason);
       if (!content) {
+        stats.emptyAnswer = true;
         throw new Error(EMPTY_ANSWER_MESSAGES[completion ?? "empty"]);
       }
       if (completion) {
@@ -254,6 +389,7 @@ export class ChatAgent {
       };
     }
 
+    stats.limitReached = true;
     throw new Error(
       `ツール呼び出しが ${MAX_ITERATIONS} 回を超えました。質問を分割して再度お試しください。`
     );

@@ -3,6 +3,7 @@ import { AppError, toSerializableError } from "../shared/types/errors";
 import type { ChatResponse, ChatTurn } from "../shared/types/chat";
 import type { AppSettings } from "../shared/types/settings";
 import { toAssistantTurn } from "../shared/utils/assistant-turn";
+import type { AgentTraceSink } from "./services/agent-trace";
 import type { ChatAgent } from "./services/chat-agent";
 import type { InMemoryStore, MaterialContextInput } from "./services/in-memory-store";
 
@@ -10,6 +11,8 @@ export interface ChatRunnerDeps {
   store: InMemoryStore;
   chatAgent: Pick<ChatAgent, "chat">;
   getSettings: () => AppSettings;
+  /** 実行の記録を受け取る先。本文や検索語は渡らない。 */
+  traceSinks?: readonly AgentTraceSink[];
   /**
    * 回答の前に MCP の接続を整える。接続できなくても回答は続けるので、
    * 失敗は例外にせず、キャンセルされたときだけ例外にする。
@@ -88,6 +91,7 @@ export class ChatRunner {
           onMaterialsRetrieved: (materials) => {
             retrievedMaterials.push(...materials);
           },
+          traceSinks: this.deps.traceSinks,
         }
       );
 

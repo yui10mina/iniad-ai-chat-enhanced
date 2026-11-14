@@ -13,6 +13,7 @@ import {
   validateSettingsInput,
 } from "./ipc-validation";
 import { ChatRunner, waitAtMost } from "./chat-runner";
+import { consoleTraceSink } from "./services/agent-trace";
 import { createAppServices } from "./services/app-services";
 import {
   AutomaticReconnectPolicy,
@@ -51,6 +52,7 @@ const chatRunner = new ChatRunner({
   store,
   chatAgent,
   getSettings: () => settingsStore.getRawSettings(),
+  traceSinks: [consoleTraceSink],
   prepareMcp: prepareMcpForChat,
 });
 
